@@ -1,0 +1,17 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# macOS
+.DS_Store
+
+# editor / local
+.idea/
+.vscode/
+*.swp
+*.log
+
+# Python bytecode from scripts/
+__pycache__/
+*.pyc
