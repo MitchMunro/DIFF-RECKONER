@@ -1813,6 +1813,9 @@ pub fn handle_mouse(
                     ui::HeaderHit::Base => app.open_base_picker(),
                     ui::HeaderHit::Pick => app.open_commit_picker(),
                 }
+            } else if let Some(row) = ui::note_row_at(area, app, m.column, m.row) {
+                // A comment box opens for editing where it sits.
+                app.click_comment(row);
             } else if let Some(row) = ui::gutter_row_at(area, app, m.column, m.row) {
                 // The gutter owns mouse commenting: click a line or drag a range, and the
                 // composer opens on release.

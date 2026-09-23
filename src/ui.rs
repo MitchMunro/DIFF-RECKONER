@@ -14,7 +14,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+    Block, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar, ScrollbarOrientation,
     ScrollbarState,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -338,7 +338,8 @@ pub fn diff_viewport_height(area: Rect, app: &App) -> usize {
 pub fn diff_row_heights(app: &App, area: Rect) -> Vec<usize> {
     let width = inner_rect(panes(area, app).diff).width as usize;
     let gutter_w = gutter_for(&app.diff);
-    app.visible.iter().map(|r| row_height(r, gutter_w, width, app.wrap)).collect()
+    let dress = row_dress(app);
+    (0..app.visible.len()).map(|i| display_height(app, &dress, i, gutter_w, width)).collect()
 }
 
 /// One display line of the read pane — what `render_diff_view` walks, paints, and records
@@ -350,6 +351,93 @@ pub enum Slot {
     Code { row: usize, seg: usize },
     /// A composer display line, inert for selection.
     Composer,
+    /// A display line of the comment box painted over a tag row: the logical row and the
+    /// line's index within that row's share of the box. Inert for selection; a click edits.
+    Note { row: usize, seg: usize },
+}
+
+/// How a visible row paints.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Dress {
+    Code,
+    /// A tag line of store comment `comment`, painted as its share of the comment's box.
+    Note {
+        comment: usize,
+    },
+    /// A tag line of the comment being edited: the edit box stands in for the whole comment.
+    Hidden,
+}
+
+/// Every visible row's [`Dress`], indexed like `app.visible`.
+fn row_dress(app: &App) -> Vec<Dress> {
+    let edited = match &app.mode {
+        Mode::Composing { editing: Some(c) } => app.store.iter().position(|s| s == c),
+        _ => None,
+    };
+    app.comment_rows()
+        .into_iter()
+        .map(|c| match c {
+            None => Dress::Code,
+            Some(i) if Some(i) == edited => Dress::Hidden,
+            Some(i) => Dress::Note { comment: i },
+        })
+        .collect()
+}
+
+/// The display lines row `i` takes: its wrapped code lines, its share of a comment box, or
+/// none. The one measure behind both the layout walk and `diff_row_heights`.
+fn display_height(app: &App, dress: &[Dress], i: usize, gutter_w: usize, width: usize) -> usize {
+    match dress[i] {
+        Dress::Code => row_height(&app.visible[i], gutter_w, width, app.wrap),
+        Dress::Note { comment } => note_lines(app, dress, i, comment, gutter_w, width).len(),
+        Dress::Hidden => 0,
+    }
+}
+
+/// One display line of a comment box.
+enum NoteLine {
+    Top,
+    Body(String),
+    Bottom,
+}
+
+/// Row `i`'s share of comment `comment`'s box: the top border on the comment's first tag row,
+/// the tag line's text wrapped to the box, and the bottom border on its last.
+fn note_lines(
+    app: &App,
+    dress: &[Dress],
+    i: usize,
+    comment: usize,
+    gutter_w: usize,
+    width: usize,
+) -> Vec<NoteLine> {
+    let Some(c) = app.store.get(comment) else { return Vec::new() };
+    let same = |j: Option<usize>| j.and_then(|j| dress.get(j)) == Some(&dress[i]);
+    let first = !same(i.checked_sub(1));
+    let last = !same(Some(i + 1));
+    let k = app.visible[i].new_no().map_or(0, |n| n.saturating_sub(c.start)) as usize;
+    let text = c.text.split('\n').nth(k).unwrap_or_default();
+    let content_w = note_content_width(gutter_w, width);
+    let mut out = Vec::new();
+    if first {
+        out.push(NoteLine::Top);
+    }
+    out.extend(box_rows(text, content_w).into_iter().map(|(_, t)| NoteLine::Body(t)));
+    if last {
+        out.push(NoteLine::Bottom);
+    }
+    out
+}
+
+/// A comment box's left indent: its side runs down the gutter's last digit column, where the
+/// first text row's line number ends, so the box's text starts in the code's column.
+fn box_indent(gutter_w: usize) -> usize {
+    gutter_w
+}
+
+/// The text width inside a resting comment box, padded like the composer.
+fn note_content_width(gutter_w: usize, width: usize) -> usize {
+    width.saturating_sub(box_indent(gutter_w) + 3).max(1)
 }
 
 /// The composing layout's splice: the first row below the box, the box height, and the
@@ -399,10 +487,15 @@ fn read_layout(app: &App, inner: Rect) -> Vec<Slot> {
     let width = inner.width as usize;
     let gutter_w = gutter_for(&app.diff);
     let rows = app.visible.len();
-    // A row's slots: its wrapped code lines, in the order `render_diff_view` paints them.
+    let dress = row_dress(app);
+    // A row's slots: its wrapped code lines or its comment-box lines, in the order
+    // `render_diff_view` paints them.
     let row_slots = |i: usize| -> Vec<Slot> {
-        let segs = row_height(&app.visible[i], gutter_w, width, app.wrap);
-        (0..segs).map(|seg| Slot::Code { row: i, seg }).collect()
+        let segs = display_height(app, &dress, i, gutter_w, width);
+        let note = matches!(dress[i], Dress::Note { .. });
+        (0..segs)
+            .map(|seg| if note { Slot::Note { row: i, seg } } else { Slot::Code { row: i, seg } })
+            .collect()
     };
 
     if !app.composing() {
@@ -544,7 +637,8 @@ pub fn read_point_at(area: Rect, app: &App, col: u16, row: u16) -> Option<crate:
 }
 
 /// `read_point_at` for a drag's moving end: clamps `(col, row)` into the pane and snaps a
-/// non-code display line to the nearest code line above, then below (`TS-ONE-SURFACE`:
+/// composer line to the nearest code line above, then below, and a comment box line to its
+/// tag line (`TS-ONE-SURFACE`:
 /// a pointer position outside the surface clamps to its nearest cell).
 #[must_use]
 pub fn read_point_clamped(
@@ -564,8 +658,16 @@ pub fn read_point_clamped(
     let code = (0..=at)
         .rev()
         .chain(at + 1..slots.len())
-        .find(|&i| matches!(slots.get(i), Some(Slot::Code { .. })))?;
-    let Slot::Code { row: li, seg } = slots[code] else { return None };
+        .find(|&i| matches!(slots.get(i), Some(Slot::Code { .. } | Slot::Note { .. })))?;
+    let (li, seg) = match slots[code] {
+        Slot::Code { row, seg } => (row, seg),
+        // A comment box stands for its tag line whole: snap to the line's last char.
+        Slot::Note { row, .. } => {
+            let chr = app.visible[row].text().chars().count().saturating_sub(1);
+            return Some(crate::selection::Point { row, chr });
+        }
+        Slot::Composer => return None,
+    };
     let r = &app.visible[li];
     if !r.is_content() {
         // A fold paints as one Code slot; snap its endpoint to the row's start.
@@ -591,6 +693,19 @@ pub fn gutter_row_at(area: Rect, app: &App, col: u16, row: u16) -> Option<usize>
     let slots = app.painted_slots();
     match *slots.get((row - pane.inner.y) as usize)? {
         Slot::Code { row: li, .. } if app.visible[li].is_content() => Some(li),
+        _ => None,
+    }
+}
+
+/// The tag row whose comment box `(col, row)` lands on, `None` elsewhere.
+#[must_use]
+pub fn note_row_at(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
+    let pane = read_pane(area, app);
+    if !contains(pane.inner, col, row) {
+        return None;
+    }
+    match *app.painted_slots().get((row - pane.inner.y) as usize)? {
+        Slot::Note { row: li, .. } => Some(li),
         _ => None,
     }
 }
@@ -839,18 +954,16 @@ pub fn composer_height(app: &App, width: usize) -> usize {
     box_rows(&app.input, composer_content_width(app, width)).len() + 2
 }
 
-/// The text width inside the comment box: the diff pane width minus its indent and its two
-/// borders.
+/// The text width inside the comment box: the diff pane width minus its indent, its two
+/// borders, and the space padding its text off the left border.
 #[must_use]
 pub fn composer_content_width(app: &App, width: usize) -> usize {
-    width.saturating_sub(composer_indent(app) + 2).max(1)
+    width.saturating_sub(composer_indent(app) + 3).max(1)
 }
 
-/// The comment box's left indent: the change bar and the gutter's padding ahead of the
-/// comment's line number, so the box's side runs down from its first digit.
+/// The comment box's [`box_indent`].
 fn composer_indent(app: &App) -> usize {
-    let digits = app.pending_line().map_or(0, |n| n.to_string().len());
-    1 + gutter_for(&app.diff).saturating_sub(digits)
+    box_indent(gutter_for(&app.diff))
 }
 
 /// The diff pane's inner content width for the full terminal `area`, so the event loop can
@@ -866,13 +979,12 @@ pub fn diff_inner_width(area: Rect, app: &App) -> usize {
 /// shows a placeholder.
 fn composer_lines(
     app: &App,
-    content_w: usize,
     rows: &[(usize, String)],
     (caret_row, caret_col): (usize, usize),
 ) -> Vec<Line<'static>> {
     let p = app.palette();
     if app.input.is_empty() {
-        return vec![Line::from(input_line("", 0, content_w, "Leave a comment…", p).0)];
+        return vec![Line::styled("Leave a comment…", Style::default().fg(p.dim2))];
     }
     rows.iter()
         .enumerate()
@@ -1678,7 +1790,6 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
             .map(|f| (f.query.as_str(), crate::app::find_case_sensitive(&f.query))),
         expand_hint: &expand_hint,
     };
-    let commented = app.commented_lines();
     let (lo, hi) = app.selection_range();
     let selecting = app.focus == Focus::Diff && app.select_anchor.is_some();
 
@@ -1705,18 +1816,24 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     // exactly as the file list marks its own.
     let mut row_cache: Option<(usize, Vec<Line>)> = None;
     let pushed = pushed_row(app);
+    let dress = row_dress(app);
     let mut line_for = |slot: &Slot| -> Line<'static> {
         match *slot {
             Slot::Code { row, seg } => {
                 if row_cache.as_ref().is_none_or(|(r, _)| *r != row) {
                     let state = RowState {
-                        commented: commented.contains(&row),
                         cursor: row == app.diff_cursor,
                         selected: selecting && row >= lo && row <= hi,
                         hovered: hovered_row == Some(row),
                         pushed: pushed == Some(row),
                     };
                     row_cache = Some((row, render_row(&app.visible[row], layout, state)));
+                }
+                row_cache.as_ref().and_then(|(_, l)| l.get(seg).cloned()).unwrap_or_default()
+            }
+            Slot::Note { row, seg } => {
+                if row_cache.as_ref().is_none_or(|(r, _)| *r != row) {
+                    row_cache = Some((row, render_note_row(app, &dress, row, gutter_w, width)));
                 }
                 row_cache.as_ref().and_then(|(_, l)| l.get(seg).cloned()).unwrap_or_default()
             }
@@ -1813,7 +1930,6 @@ struct RowLayout<'a> {
 #[derive(Clone, Copy)]
 #[allow(clippy::struct_excessive_bools)]
 struct RowState {
-    commented: bool,
     cursor: bool,
     selected: bool,
     /// Whether the pointer hovers this row — its change bar cell shows the gutter `+`
@@ -1830,7 +1946,7 @@ struct RowState {
 /// stay aligned. With wrap off, the line is one row scrolled by `h_scroll`.
 fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'static>> {
     let RowLayout { gutter_w, width, h_scroll, wrap, focused, pal, find, expand_hint } = layout;
-    let RowState { commented, cursor, selected, hovered, pushed } = state;
+    let RowState { cursor, selected, hovered, pushed } = state;
     if let Row::Fold { .. } = row {
         let label = if cursor {
             format!("  ⋯  {} unmodified lines — {expand_hint} expand", row.hidden())
@@ -1859,9 +1975,8 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
         .or_else(|| row.old_no())
         .filter(|&n| n > 0)
         .map_or(String::new(), |n| n.to_string());
-    // A commented line's number takes the orange comment accent; others sit a step brighter
-    // than the dim chrome so they stay legible while read.
-    let num_color = if commented { pal.orange } else { pal.dim1 };
+    // Numbers sit a step brighter than the dim chrome so they stay legible while read.
+    let num_color = pal.dim1;
     let (bar, bar_color) = match row.marker() {
         '-' => ("▌", pal.red),
         '+' => ("▌", pal.green),
@@ -2182,17 +2297,93 @@ fn render_find_band(frame: &mut Frame, app: &App, area: Rect) {
     anchor_input_cursor(frame, area, label.width() + caret_cell_col, 0);
 }
 
-/// The inline comment input box, drawn across `band`. The line number its comment starts on
-/// takes the top-left corner, where the gutter paints it, and the box's side runs down from
-/// its first digit.
+/// A comment box's title, resting or open: the word its tag lines carry.
+const BOX_TITLE: &str = "REVIEW";
+
+/// Tag row `i`'s share of its resting comment box, the composer's shape in neutral colors.
+/// The border brightens while the cursor is anywhere in the comment, and the cursor's own
+/// tag line takes the cursor fill.
+fn render_note_row(
+    app: &App,
+    dress: &[Dress],
+    i: usize,
+    gutter_w: usize,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let Dress::Note { comment } = dress[i] else { return Vec::new() };
+    let Some(c) = app.store.get(comment) else { return Vec::new() };
+    let p = app.palette();
+    let focused = app.focus == Focus::Diff;
+    let on_it = dress.get(app.diff_cursor) == Some(&dress[i]);
+    let border = Style::default().fg(if on_it && focused { p.text } else { p.dim1 });
+    let text_style = if app.diff_cursor != i {
+        Style::default().fg(p.dim0)
+    } else if let Some(bg) = p.cursor_bg(focused) {
+        Style::default().bg(bg).fg(p.sel_fg.unwrap_or(p.text))
+    } else {
+        Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+    };
+    let indent = box_indent(gutter_w).min(width.saturating_sub(3));
+    let content_w = note_content_width(gutter_w, width);
+    let pad = Span::raw(" ".repeat(indent));
+    // The box's first text row carries its line number in place of the left side, the last
+    // digit on the side's column so the number sits where the gutter paints its own.
+    let number = c.start.to_string();
+    let numbered = Span::styled(
+        format!("{}{number}", " ".repeat((indent + 1).saturating_sub(number.len()))),
+        border,
+    );
+    let mut first_body = false;
+    note_lines(app, dress, i, comment, gutter_w, width)
+        .into_iter()
+        .map(|line| match line {
+            NoteLine::Top => {
+                let title =
+                    framed_title(&c.deleted.as_deref().map_or(BOX_TITLE.to_string(), |d| {
+                        format!("{BOX_TITLE} · on deleted: {d}")
+                    }));
+                first_body = true;
+                let mut top = format!("┌─{title}");
+                let fill = width.saturating_sub(indent + top.width() + 1);
+                top.push_str(&"─".repeat(fill));
+                top.push('┐');
+                Line::from(vec![pad.clone(), Span::styled(top, border)])
+            }
+            NoteLine::Body(text) => {
+                let gap = " ".repeat(content_w.saturating_sub(text.width()));
+                let side = if std::mem::take(&mut first_body) {
+                    vec![numbered.clone()]
+                } else {
+                    vec![pad.clone(), Span::styled("│", border)]
+                };
+                Line::from(
+                    [
+                        side,
+                        vec![
+                            Span::styled(format!(" {text}{gap}"), text_style),
+                            Span::styled("│", border),
+                        ],
+                    ]
+                    .concat(),
+                )
+            }
+            NoteLine::Bottom => Line::from(vec![
+                pad.clone(),
+                Span::styled(format!("└{}┘", "─".repeat(content_w + 1)), border),
+            ]),
+        })
+        .collect()
+}
+
+/// The inline comment input box, drawn across `band`, in the resting box's shape: the line
+/// number its comment starts on takes the left side of the first text row, its last digit on
+/// the side's column where the gutter paints its own.
 fn render_composer(frame: &mut Frame, app: &App, band: Rect) {
     let p = app.palette();
     let accent = Style::default().fg(p.orange);
-    let editing = matches!(app.mode, Mode::Composing { editing: Some(_) });
     let indent = (composer_indent(app) as u16).min(band.width.saturating_sub(3));
     let boxed = Rect { x: band.x + indent, width: band.width - indent, ..band };
-    let number = app.pending_line().map_or(String::new(), |n| n.to_string());
-    let mut top = format!("{number} ─{}", framed_title(if editing { "edit" } else { "comment" }));
+    let mut top = format!("┌─{}", framed_title(BOX_TITLE));
     let fill = (boxed.width as usize).saturating_sub(top.width() + 1);
     top.push_str(&"─".repeat(fill));
     top.push('┐');
@@ -2200,7 +2391,8 @@ fn render_composer(frame: &mut Frame, app: &App, band: Rect) {
     let area = Rect { y: boxed.y + 1, height: boxed.height.saturating_sub(1), ..boxed };
     let block = Block::default()
         .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
-        .border_style(accent);
+        .border_style(accent)
+        .padding(Padding::left(1));
     let content_w = composer_content_width(app, band.width as usize);
     let rows = box_rows(&app.input, content_w);
     let inner = block.inner(area);
@@ -2208,10 +2400,16 @@ fn render_composer(frame: &mut Frame, app: &App, band: Rect) {
     let (cursor_row, cursor_col) = composer_caret_cell_position(&rows, rowcol, content_w);
     // A box too short for its rows scrolls to keep the caret row visible.
     let scroll = cursor_row.saturating_sub((inner.height as usize).saturating_sub(1));
-    let body = Paragraph::new(composer_lines(app, content_w, &rows, rowcol))
+    let body = Paragraph::new(composer_lines(app, &rows, rowcol))
         .block(block)
         .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
     frame.render_widget(body, area);
+    if let Some(n) = app.pending_line().filter(|_| inner.height > 0) {
+        let number = n.to_string();
+        let w = (number.len() as u16).min(boxed.x - band.x + 1);
+        let at = Rect { x: boxed.x + 1 - w, y: area.y, width: w, height: 1 };
+        frame.render_widget(Paragraph::new(Line::styled(number, accent)), at);
+    }
     anchor_input_cursor(frame, inner, cursor_col, cursor_row - scroll);
 }
 

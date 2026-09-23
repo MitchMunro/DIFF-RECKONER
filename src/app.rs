@@ -3553,17 +3553,30 @@ impl App {
 
     /// Row indices of the open file's comment lines, for the gutter mark and `n`/`N`.
     pub fn commented_lines(&self) -> HashSet<usize> {
-        let Some(file) = self.diff_path.as_deref() else { return HashSet::new() };
-        if !self.shows_worktree_lines() {
-            return HashSet::new();
-        }
-        let here: Vec<&Comment> = self.store.iter().filter(|c| c.file == file).collect();
+        self.comment_rows().iter().enumerate().filter_map(|(i, c)| c.map(|_| i)).collect()
+    }
+
+    /// Per visible row, the store index of the comment whose tag line it is — the rows the
+    /// diff paints as comment boxes. All `None` where the pane shows no worktree lines.
+    pub fn comment_rows(&self) -> Vec<Option<usize>> {
+        let file = self.diff_path.as_deref().filter(|_| self.shows_worktree_lines());
+        let Some(file) = file else { return vec![None; self.visible.len()] };
+        let here: Vec<(usize, &Comment)> =
+            self.store.iter().enumerate().filter(|(_, c)| c.file == file).collect();
         self.visible
             .iter()
-            .enumerate()
-            .filter(|(_, row)| here.iter().any(|c| covers(c, row)))
-            .map(|(i, _)| i)
+            .map(|row| here.iter().find(|(_, c)| covers(c, row)).map(|(i, _)| *i))
             .collect()
+    }
+
+    /// A click on the comment box painted over `row`: land the cursor there and open the box
+    /// for editing.
+    pub fn click_comment(&mut self, row: usize) {
+        let Some(i) = self.comment_rows().get(row).copied().flatten() else { return };
+        self.focus = Focus::Diff;
+        self.select_anchor = None;
+        self.diff_cursor = row;
+        self.edit_comment_at(i);
     }
 
     /// The store index to act on: the comment under the diff cursor, or — in the

@@ -100,14 +100,13 @@ fn a_new_comment_box_hangs_off_its_line_number_above_the_line_it_pushes_down() {
     composing(&mut app);
     let out = render(&app);
     let lines: Vec<&str> = out.lines().collect();
-    let top = lines.iter().position(|l| l.contains("─ comment ─")).expect("the box's top border");
-    // The comment's line number takes the box's top-left corner, in the gutter's column, and
-    // the title carries no file name.
-    assert!(lines[top].starts_with("│   2 ─ comment ─"), "\n{out}");
+    let top = lines.iter().position(|l| l.contains("─ REVIEW ─")).expect("the box's top border");
+    // The title carries no file name.
+    assert!(lines[top].starts_with("│   ┌─ REVIEW ─"), "\n{out}");
     assert!(lines[top].contains("─┐││"), "\n{out}");
     assert!(!lines[top].contains("hello.rs"), "\n{out}");
-    // The box's left side runs down from the number's first digit.
-    assert!(lines[top + 1].starts_with("│   │ Leave a comment…"), "\n{out}");
+    // The comment's line number takes the first text row's left side, in the gutter's column.
+    assert!(lines[top + 1].starts_with("│   2 Leave a comment…"), "\n{out}");
     assert!(lines[top + 2].starts_with("│   └──"), "\n{out}");
     // The line the comment goes above sits under the box, its number starred.
     assert!(lines[top + 3].starts_with("│▌  2*BETA"), "\n{out}");
@@ -116,7 +115,7 @@ fn a_new_comment_box_hangs_off_its_line_number_above_the_line_it_pushes_down() {
 }
 
 #[test]
-fn the_comment_box_side_lines_up_with_a_wider_numbers_first_digit() {
+fn the_comment_box_number_lines_up_with_a_wider_gutter_number() {
     let r = Repo::init();
     let before = (1..=12).fold(String::new(), |s, i| s + &format!("l{i}\n"));
     r.write("long.rs", &before);
@@ -126,10 +125,10 @@ fn the_comment_box_side_lines_up_with_a_wider_numbers_first_digit() {
     composing(&mut app);
     let out = render(&app);
     let lines: Vec<&str> = out.lines().collect();
-    let top = lines.iter().position(|l| l.contains("─ comment ─")).expect("the box's top border");
-    assert!(lines[top].starts_with("│  11 ─ comment ─"), "\n{out}");
-    assert!(lines[top + 1].starts_with("│  │ "), "\n{out}");
-    assert!(lines[top + 2].starts_with("│  └──"), "\n{out}");
+    let top = lines.iter().position(|l| l.contains("─ REVIEW ─")).expect("the box's top border");
+    assert!(lines[top].starts_with("│   ┌─ REVIEW ─"), "\n{out}");
+    assert!(lines[top + 1].starts_with("│  11 Leave"), "\n{out}");
+    assert!(lines[top + 2].starts_with("│   └──"), "\n{out}");
 }
 
 #[test]
@@ -368,7 +367,7 @@ fn token_x(buf: &Buffer, token: &str, x0: u16) -> u16 {
 }
 
 #[test]
-fn a_saved_comment_renders_as_its_tag_line_in_the_diff() {
+fn a_saved_comment_stays_inline_as_a_box_and_a_click_edits_it() {
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\n");
     r.commit_all("init");
@@ -384,9 +383,29 @@ fn a_saved_comment_renders_as_its_tag_line_in_the_diff() {
     app.submit_comment(); // box closes, comment saved
 
     let out = render(&app);
-    let tag = format!("2 // {} memoize this", diff_reckoner::review::TAG);
-    assert!(out.contains(&tag), "the comment is an inserted line of the file:\n{out}");
-    assert!(!out.contains("comment ·"), "no card is spliced beside it:\n{out}");
+    assert!(out.contains("2 memoize this"), "the comment rests in a box where it sits:\n{out}");
+    assert!(!out.contains(diff_reckoner::review::TAG), "its tag line is not painted:\n{out}");
+
+    // A click on the box opens it for editing in its place.
+    let (y, line) = out.lines().enumerate().find(|(_, l)| l.contains("2 memoize this")).unwrap();
+    let x = line.chars().take_while(|&c| c != 'm').count();
+    app.hover = None;
+    let click = MouseEvent {
+        kind: MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+        column: u16::try_from(x).unwrap(),
+        row: u16::try_from(y).unwrap(),
+        modifiers: KeyModifiers::NONE,
+    };
+    let keymap = app.keymap().clone();
+    handle_mouse(&mut app, click, AREA, &[], &keymap, &diff_reckoner::export::Clipboard).unwrap();
+    assert!(
+        matches!(app.mode, diff_reckoner::app::Mode::Composing { editing: Some(_) }),
+        "the click opens the comment for editing"
+    );
+    assert_eq!(app.input, "memoize this");
+    let out = render(&app);
+    assert!(out.contains("─ REVIEW ─"), "the edit box opens, titled as ever:\n{out}");
+    assert_eq!(out.matches("memoize this").count(), 1, "it replaces the resting box:\n{out}");
 }
 
 #[test]
@@ -911,7 +930,7 @@ fn composing_renders_the_inline_multiline_box() {
     }
 
     let out = render(&app);
-    assert!(out.contains("─ comment ─"), "box titled");
+    assert!(out.contains("─ REVIEW ─"), "box titled");
     assert!(out.contains("line one"), "first input line shown");
     assert!(out.contains("line two"), "second input line shown — the box is multi-line");
 }
@@ -936,7 +955,7 @@ fn the_box_grows_with_multiline_input_and_keeps_the_anchor_visible_below_it() {
     let lines: Vec<&str> = out.lines().collect();
     // The inserted line is the only one carrying an uppercase `B` (no `+` glyph now).
     let anchor = lines.iter().position(|l| l.contains('B')).expect("anchor line visible");
-    let box_row = lines.iter().position(|l| l.contains("─ comment ─")).expect("box");
+    let box_row = lines.iter().position(|l| l.contains("─ REVIEW ─")).expect("box");
     assert!(anchor > box_row, "the commented line stays visible below the box as it grows");
 }
 
@@ -956,7 +975,7 @@ fn the_box_is_inserted_above_the_selected_line() {
 
     let out = render(&app);
     let lines: Vec<&str> = out.lines().collect();
-    let box_row = lines.iter().position(|l| l.contains("─ comment ─")).expect("box rendered");
+    let box_row = lines.iter().position(|l| l.contains("─ REVIEW ─")).expect("box rendered");
     let above_row = lines.iter().position(|l| l.contains("alpha")).expect("context above shown");
     let selected_row = lines.iter().position(|l| l.contains("BETA")).expect("selected line shown");
     assert!(above_row < box_row, "the diff line above the selection stays above the box");

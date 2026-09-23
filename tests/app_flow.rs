@@ -4791,8 +4791,8 @@ fn ts_one_surface_a_drag_clamps_to_its_pane_and_copies_a_comment_as_its_line() {
     assert!(drag.extent.row < app.visible.len());
     press(&mut app, &Keymap::default(), KeyCode::Esc);
 
-    // A comment is an ordinary line of the file, so a drag across it copies its tag line
-    // like any other code.
+    // A comment is an ordinary line of the file, so a drag across its box copies its tag line
+    // like any other code. The box takes three display lines, so `if x {` sits at display row 4.
     app.focus = Focus::Diff;
     app.diff_cursor = 1;
     press(&mut app, &Keymap::default(), KeyCode::Char('c'));
@@ -4800,7 +4800,7 @@ fn ts_one_surface_a_drag_clamps_to_its_pane_and_copies_a_comment_as_its_line() {
     press(&mut app, &Keymap::default(), KeyCode::Enter);
     assert_eq!(app.store.len(), 1);
     let (c0, r0) = sel_cell(&app, 0, 0);
-    let (c3, r3) = sel_cell(&app, 3, 5);
+    let (c3, r3) = sel_cell(&app, 5, 5);
     sel_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c0, r0);
     sel_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), c3, r3);
     assert_eq!(app.text_drag().expect("drag still live").surface, Surface::Read);
