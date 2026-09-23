@@ -130,6 +130,8 @@ pub struct Palette {
     /// The selected-line fill, lazygit's `selectedLineBgColor`: a readable blue tint behind the
     /// cursor row, legible under syntax-colored text.
     pub sel_bg: Color,
+    /// The text on `sel_bg`, where the fill needs its own; `None` keeps the row's colors.
+    pub sel_fg: Option<Color>,
 }
 
 impl Palette {
@@ -387,11 +389,12 @@ pub const INVERSE: Color = Color::Indexed(255);
 /// roles are [`FAINT`], and the surfaces are the grays, ordered by `appearance` — on a dark
 /// terminal the strongest is [`INVERSE`].
 fn follow_terminal(appearance: Appearance) -> Theme {
-    let (surface, soft, strong) = match appearance {
+    let (surface, soft, strong, sel_fg) = match appearance {
         // No ANSI color is a quiet bar on every dark background (black is a hole on a gray
         // one), so the dark bars take no fill.
-        Appearance::Dark => (Color::Reset, Color::Black, INVERSE),
-        Appearance::Light => (Color::White, Color::Gray, Color::Gray),
+        Appearance::Dark => (Color::Reset, Color::Black, INVERSE, None),
+        // A light scheme's blue is dark, as is its text, so the cursor row's text is white.
+        Appearance::Light => (Color::White, Color::Gray, Color::Gray, Some(Color::White)),
     };
     let palette = Palette {
         base: Color::Reset,
@@ -415,6 +418,7 @@ fn follow_terminal(appearance: Appearance) -> Theme {
         emph_ins_bg: Color::Green,
         match_hl: Color::Yellow,
         sel_bg: Color::Blue,
+        sel_fg,
     };
     Theme { name: TERMINAL, palette, syntax: SyntaxChoice::Derived(palette) }
 }
@@ -445,6 +449,7 @@ fn catppuccin() -> Theme {
             emph_ins_bg: Color::Rgb(0x30, 0x55, 0x3f),
             match_hl: Color::Rgb(0x5c, 0x51, 0x2b),
             sel_bg: Color::Rgb(0x35, 0x3d, 0x7d),
+            sel_fg: None,
         },
         syntax: SyntaxChoice::Bundled(MOCHA_TM),
     }
@@ -626,6 +631,7 @@ fn derive(a: Anchors, appearance: Appearance) -> Palette {
         emph_ins_bg: readable_tint(a.green, a.base, a.text, appearance, true),
         match_hl: readable_tint(a.yellow, a.base, a.text, appearance, true),
         sel_bg: readable_tint(saturated(a.blue), a.base, a.text, appearance, true),
+        sel_fg: None,
     }
 }
 
@@ -758,6 +764,11 @@ mod tests {
         assert_eq!(terminal.name, "terminal");
         assert_eq!((terminal.palette.base, terminal.palette.text), (Color::Reset, Color::Reset));
         assert!(super::is_known("terminal") && !super::is_builtin("terminal"));
+        // The cursor is ANSI blue either way; a light terminal's text on it turns white.
+        let dark = super::follow_terminal(Appearance::Dark).palette;
+        let light = super::follow_terminal(Appearance::Light).palette;
+        assert_eq!((dark.sel_bg, dark.sel_fg), (Color::Blue, None));
+        assert_eq!((light.sel_bg, light.sel_fg), (Color::Blue, Some(Color::White)));
         assert_eq!(resolve(None).name, "catppuccin");
     }
 

@@ -1817,7 +1817,11 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
             let rule = if ruled { format!(" {}", "─".repeat(pad - 1)) } else { " ".repeat(pad) };
             line.push_span(Span::styled(rule, Style::default().fg(fg)));
         }
-        let bg = cursor.then(|| pal.cursor_bg(focused)).flatten().unwrap_or(pal.surface0);
+        let fill = cursor.then(|| pal.cursor_bg(focused)).flatten();
+        if fill.is_some() {
+            on_cursor_fill(pal, &mut line.spans);
+        }
+        let bg = fill.unwrap_or(pal.surface0);
         return vec![line.style(Style::default().bg(bg).add_modifier(Modifier::BOLD))];
     }
     // `0` is an unnumbered PR snippet row; file diffs are 1-based.
@@ -1911,6 +1915,10 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
             };
             let mut spans = gutter;
             spans.extend(cells_to_spans(chunk, emph_bg, HlStyle { bg: pal.yellow, fg: pal.ink() }));
+            if cursor_fill.is_some() {
+                // The change bar keeps its red or green.
+                on_cursor_fill(pal, &mut spans[1..]);
+            }
             let mut line = Line::from(spans);
             if let Some(pad) = width.checked_sub(line.width()).filter(|p| *p > 0) {
                 line.push_span(Span::raw(" ".repeat(pad)));
@@ -3599,6 +3607,7 @@ fn search_preview_line(
                     .into_iter()
                     .map(|sp| Span::styled(sp.content.replace('\t', "    "), sp.style)),
             );
+            on_cursor_fill(p, &mut spans);
             let mut line = Line::from(spans);
             let pad = width.saturating_sub(line.width());
             if pad > 0 {
@@ -3834,8 +3843,21 @@ fn selectable_row(
             }
             s.style = s.style.add_modifier(Modifier::BOLD);
         }
+        if fill.is_some() {
+            on_cursor_fill(p, &mut spans);
+        }
     }
     ListItem::new(Line::from(spans))
+}
+
+/// Give the text on a `sel_bg` fill the palette's `sel_fg`, where it has one. A span with its
+/// own background (the search match highlight) keeps its colors.
+fn on_cursor_fill(p: &Palette, spans: &mut [Span<'_>]) {
+    if let Some(fg) = p.sel_fg {
+        for s in spans.iter_mut().filter(|s| s.style.bg.is_none_or(|bg| bg == p.sel_bg)) {
+            s.style = s.style.fg(fg);
+        }
+    }
 }
 
 // --- helpers -------------------------------------------------------------------
