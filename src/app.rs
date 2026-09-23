@@ -5,7 +5,7 @@
 //! whole interaction model is testable without a backend. `src/main.rs` owns the
 //! terminal and maps input events onto these methods.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -17,7 +17,8 @@ use crate::file_list::{self, Annotation, Entry, RowKind};
 use crate::git;
 use crate::highlight::Highlighter;
 use crate::logln;
-use crate::model::{Comment, CommentStore, CommitPick, Rev, Scope, Side};
+use crate::model::{ChangeKind, Comment, CommentStore, CommitPick, Scope};
+use crate::review::{self, Placement};
 use crate::theme::{self, Palette};
 use crate::world::{PickStatus, PickVerdict};
 
@@ -369,9 +370,11 @@ impl CommitPicker {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Mode {
     Normal,
-    /// Writing a comment; `editing` is the store index when editing an existing one.
+    /// Writing a comment; `editing` is the comment being rewritten, as the store held it when
+    /// the edit opened. A poll can replace the store mid-edit, so the save finds it again by
+    /// identity rather than by index.
     Composing {
-        editing: Option<usize>,
+        editing: Option<Comment>,
     },
     /// Browsing the comments-list overlay.
     List,
@@ -792,6 +795,12 @@ pub struct App {
     /// beneath it, so the gesture's end reloads it once.
     view_reload_held: bool,
     pub store: CommentStore,
+    /// Ignored files a comment was written into this session, which the scan reads by name
+    /// (`WorldInput::ignored_comment_files`).
+    ignored_comment_files: BTreeSet<String>,
+    /// The git-ignored file a first `comment` press warned about; the next press on it writes.
+    /// Any other key disarms it.
+    pub ignored_confirm: Option<String>,
     pub list_cursor: usize,
     /// The base picker's rows, filter, and highlight while `Mode::BasePick` is open
     pub base_picker: Option<BasePicker>,
@@ -944,6 +953,8 @@ impl App {
             view_reload_held: false,
             select_anchor: None,
             store: CommentStore::new(),
+            ignored_comment_files: BTreeSet::new(),
+            ignored_confirm: None,
             list_cursor: 0,
             base_picker: None,
             theme_picker: None,
@@ -1179,10 +1190,12 @@ impl App {
     }
 
     /// Move user-authored review state into a freshly loaded app after config recovery. Saved
-    /// comments always survive; an in-progress draft keeps the exact frozen diff it was written
-    /// against, matching the ordinary refresh invariant.
+    /// comments live in the files; the store carries so the list paints before the first scan.
+    /// An in-progress draft keeps the exact frozen diff it was written against, matching the
+    /// ordinary refresh invariant.
     pub(crate) fn carry_authored_state_from(&mut self, old: &mut Self) {
         self.store = std::mem::take(&mut old.store);
+        self.ignored_comment_files = std::mem::take(&mut old.ignored_comment_files);
         self.list_cursor = old.list_cursor;
         // The footer expansion is one global toggle, carried regardless of the recovered mode
         self.keys_expanded = old.keys_expanded;
@@ -1407,6 +1420,27 @@ impl App {
             } else {
                 HashSet::new()
             },
+            ignored_comment_files: self.ignored_comment_files.clone(),
+        }
+    }
+
+    /// Adopt a scan's comments. The list's highlight follows its comment by identity, then
+    /// clamps (Continuity).
+    fn adopt_comments(&mut self, comments: Vec<Comment>) {
+        let highlighted = self.store.get(self.list_cursor).cloned();
+        self.store.replace_all(comments);
+        self.follow_list_cursor(highlighted.as_ref());
+    }
+
+    /// Put the list's highlight back on `highlighted` after the store changed under it, else
+    /// clamp; an emptied list closes rather than strand the reviewer in `Comments (0)`.
+    fn follow_list_cursor(&mut self, highlighted: Option<&Comment>) {
+        if let Some(i) = highlighted.and_then(|c| self.store.position_of(c)) {
+            self.list_cursor = i;
+        }
+        self.clamp_list_cursor();
+        if self.store.is_empty() {
+            self.close_list();
         }
     }
 
@@ -1453,6 +1487,7 @@ impl App {
         self.entries = snapshot.entries;
         self.adopt_branch_base(snapshot.branch_base);
         self.adopt_pick_status(snapshot.pick_status);
+        self.adopt_comments(snapshot.comments);
         self.rebuild_file_rows();
         self.file_cursor = anchor
             .and_then(|a| self.row_of_anchor(&a))
@@ -1488,9 +1523,7 @@ impl App {
             self.settled_sel = None;
         }
         // The settled highlight follows Continuity: it survives a land that left its text
-        // alone and blanks when the text under it changed — stale never wrong
-        // The `PR` surfaces land through the PR paint, and a
-        // card's text is the in-memory comment's, which no poll moves.
+        // alone and blanks when the text under it changed — stale never wrong.
         if let Some((d, text)) = &self.settled_sel {
             use crate::selection::Surface;
             let (a, b) = d.ordered();
@@ -1503,7 +1536,6 @@ impl App {
                 // The preview repaints whenever its source changed; the span's own painted
                 // rows are layout-side, so the source string is the comparable identity.
                 Surface::Painted => preview_before.as_deref() == Some(self.preview_text.as_str()),
-                Surface::Card { .. } => true,
             };
             if !same {
                 self.settled_sel = None;
@@ -1751,15 +1783,6 @@ impl App {
                 format!("commit {} is gone", git::abbreviate_oid(sha))
             }
             _ => String::new(),
-        }
-    }
-
-    /// Where the open diff's new side was read: the picked run's
-    /// newest commit in `commits`, the worktree everywhere else.
-    fn current_rev(&self) -> Rev {
-        match (self.scope, &self.commit_pick) {
-            (Scope::Commits, Some(pick)) => Rev::Commit(pick.clone()),
-            _ => Rev::Worktree,
         }
     }
 
@@ -2214,7 +2237,7 @@ impl App {
     }
 
     /// Scroll the diff so the reveal target's row fits the `viewport`-display-row window —
-    /// `heights` is each visible row's display height (wrap + comment cards). Called once
+    /// `heights` is each visible row's display height (with wrap). Called once
     /// per frame when a navigation requested a reveal, not on a wheel scroll.
     ///
     /// The target is the cursor, except while composing: the box opens under the selection's
@@ -2828,9 +2851,8 @@ impl App {
         use crate::selection::Surface;
         matches!(self.gesture, crate::selection::Gesture::Gutter)
             || self.text_drag().is_some_and(|d| match d.surface {
-                // The preview anchors to the open view's content, like the diff rows and
-                // the comment cards.
-                Surface::Read | Surface::Card { .. } | Surface::Painted => true,
+                // The preview anchors to the open view's content, like the diff rows.
+                Surface::Read | Surface::Painted => true,
                 Surface::Files => false,
             })
     }
@@ -2845,7 +2867,7 @@ impl App {
         // landing snapshots under a live gesture.
         self.text_drag().is_some_and(|d| match d.surface {
             Surface::Files => true,
-            Surface::Read | Surface::Card { .. } | Surface::Painted => false,
+            Surface::Read | Surface::Painted => false,
         })
     }
 
@@ -2981,16 +3003,85 @@ impl App {
     }
 
     pub fn start_comment(&mut self) {
+        let confirmed = self.ignored_confirm.take();
         if self.preview_active() {
             return; // the preview is read-only
         }
-        if self.focus == Focus::Diff && self.has_anchorable_selection() {
-            self.reveal_diff = true; // scroll the anchored line into view before the box opens
-            self.input.clear();
-            self.caret = 0;
-            self.resume_list = false; // a fresh diff comment returns to the diff, not the list
-            self.mode = Mode::Composing { editing: None };
+        if self.focus != Focus::Diff || !self.has_anchorable_selection() {
+            return;
         }
+        let (file, at) = match self.placement() {
+            Ok(placed) => placed,
+            Err(refusal) => {
+                self.status = refusal;
+                return;
+            }
+        };
+        // Tag lines touching the new ones would merge into one comment, so a comment's own
+        // lines, and the line it annotates, open that comment instead.
+        let touching = self.store.iter().position(|c| {
+            c.file == file && (c.end + 1 == at.before || (c.start..=c.end).contains(&at.before))
+        });
+        if let Some(i) = touching {
+            self.edit_comment_at(i);
+            return;
+        }
+        // An ignored file takes a comment only on a second press (§3.4).
+        if confirmed.as_deref() != Some(file.as_str()) && git::is_ignored(&self.repo, &file) {
+            self.status = format!("{file} is git-ignored; comment again to write into it");
+            self.ignored_confirm = Some(file);
+            return;
+        }
+        self.reveal_diff = true; // scroll the anchored line into view before the box opens
+        self.input.clear();
+        self.caret = 0;
+        self.resume_list = false; // a fresh diff comment returns to the diff, not the list
+        self.mode = Mode::Composing { editing: None };
+    }
+
+    /// Whether the read pane shows worktree lines, the only lines a comment can live on: not
+    /// the preview, and not a `commits` diff, whose new side is a commit.
+    fn shows_worktree_lines(&self) -> bool {
+        !(self.preview_active() || (self.tab == Tab::Changes && self.scope == Scope::Commits))
+    }
+
+    /// The file and placement a comment on the current selection writes to, or the status line
+    /// saying why it cannot. A selection with a surviving line goes above its first one; one
+    /// of only removed lines goes above the next surviving line and carries the first removed
+    /// line (§3.3).
+    fn placement(&self) -> Result<(String, Placement), String> {
+        let file = self.diff_path.clone().ok_or_else(|| "no file open".to_string())?;
+        if !self.shows_worktree_lines() {
+            return Err("comments live in the worktree; switch scope to comment".into());
+        }
+        if review::line_prefix(&file).is_none() {
+            let ext = std::path::Path::new(&file).extension().map(|e| e.to_string_lossy());
+            return Err(format!("no line-comment syntax for .{}", ext.unwrap_or_default()));
+        }
+        let deleted = self.changed.get(&file).is_some_and(|a| a.change == ChangeKind::Deleted);
+        if deleted || !self.repo.join(&file).is_file() {
+            return Err("a deleted file has no lines to comment on".into());
+        }
+        let (lo, hi) = self.selection_range();
+        let selected = self.visible.get(lo..=hi).unwrap_or_default();
+        let at = |row: &Row| row.new_no().map(|n| (n, row.text()));
+        if let Some((before, text)) = selected.iter().find_map(at) {
+            return Ok((file, Placement { before, expect: Some(text), deleted: None }));
+        }
+        let removed = selected
+            .iter()
+            .find(|row| row.old_no().is_some())
+            .ok_or_else(|| "nothing here to comment on".to_string())?;
+        let deleted = Some(review::deleted_snippet(&removed.text()));
+        let after = self.visible[hi + 1..].iter().flat_map(Row::lines).find_map(at);
+        let placement = if let Some((before, text)) = after {
+            Placement { before, expect: Some(text), deleted }
+        } else {
+            // Nothing survives below: the end of the file.
+            let last = self.visible.iter().flat_map(Row::lines).filter_map(Row::new_no).max();
+            Placement { before: last.unwrap_or(0) + 1, expect: None, deleted }
+        };
+        Ok((file, placement))
     }
 
     /// `edit`: the comment under the cursor, else the file the cursor names
@@ -3005,7 +3096,7 @@ impl App {
 
     /// Whether a comment takes the key here, rather than the file.
     ///
-    /// A comment claims it only where its card is on screen. With the navigator focused the
+    /// A comment claims it only where its lines are on screen. With the navigator focused the
     /// diff cursor is off screen, so the file row under the eye wins. A live line selection is
     /// a gesture in progress on the diff, so nothing on the diff claims the key and the range
     /// survives — the comments list, which owns the screen instead, still claims it
@@ -3019,12 +3110,10 @@ impl App {
         claimed && self.target_comment().is_some()
     }
 
-    /// Whether the list's highlighted comment can be edited here: only while the active
-    /// scope reads the diff it was made on, so the edit box opens over its card and never
-    /// over a same-numbered line of another revision.
+    /// Whether the list has a highlighted comment to edit. Every comment is a worktree file's,
+    /// so any of them can be rewritten whatever the scope.
     fn list_comment_editable(&self) -> bool {
-        self.mode == Mode::List
-            && self.store.get(self.list_cursor).is_some_and(|c| self.rev_is_current(c))
+        self.mode == Mode::List && self.store.get(self.list_cursor).is_some()
     }
 
     /// Whether `edit` opens a file here. The branch [`Self::start_edit`] takes, asked by the
@@ -3077,56 +3166,48 @@ impl App {
     }
 
     fn edit_comment(&mut self) {
+        if let Some(i) = self.target_comment() {
+            self.edit_comment_at(i);
+        }
+    }
+
+    fn edit_comment_at(&mut self, i: usize) {
         // Editing from the comments-list overlay returns there on finish (else to the diff).
         let from_list = self.mode == Mode::List;
-        let Some(i) = self.target_comment() else { return };
-        let Some(c) = self.store.get(i) else { return };
+        let Some(c) = self.store.get(i).cloned() else { return };
         self.preview = false;
-        let (file, side, start, end, text) =
-            (c.file.clone(), c.side, c.start, c.end, c.text.clone());
-        let in_view = self.comment_in_view(c);
 
         // Bring the comment's file into the diff and land the cursor on its line, so the
         // inline edit box opens over the comment — even when editing from the list, and even
         // when the file's row is hidden inside a collapsed directory (load it by path, not by
         // tree row). Move the list cursor onto its row when one exists.
-        if self.diff_path.as_deref() != Some(file.as_str())
-            && let Some(e) = self.entries.iter().find(|e| e.path == file).cloned()
+        if self.diff_path.as_deref() != Some(c.file.as_str())
+            && let Some(e) = self.entries.iter().find(|e| e.path == c.file).cloned()
         {
             self.reset_diff_view();
-            // Open it in the active tab's view — the File view on `All files`, not a diff — so
-            // the pane and the comment's anchor kind stay consistent with the tab.
+            // Open it in the active tab's view — the File view on `All files`, not a diff.
             self.open_path_in_tab(e.path, e.previous_path);
-            if let Some(fi) = self.file_row_of_path(&file) {
+            if let Some(fi) = self.file_row_of_path(&c.file) {
                 self.file_cursor = fi;
             }
         }
-        // Only move the cursor when the open diff is actually the comment's file, so a
-        // stale comment (file gone from the changeset) never jumps the cursor onto a
-        // same-numbered line in a different file, and a comment from another view (a commit
-        // comment under a worktree scope) never lands on the same-numbered worktree line
-        // Land on the range's LAST row — the row the card splices
-        // under (`card_rows`) — so the edit box opens in the card's place instead of jumping
-        // to the range's first line.
-        if in_view
-            && self.diff_path.as_deref() == Some(file.as_str())
-            && let Some(idx) = self.visible.iter().rposition(|row| {
-                let no = match side {
-                    Side::New => row.new_no(),
-                    Side::Old => row.old_no(),
-                };
-                no.is_some_and(|n| start <= n && n <= end)
-            })
+        // Only move the cursor when the pane shows the comment's own worktree lines, so a
+        // comment in a file the changeset doesn't list, or under a `commits` diff, never lands
+        // the cursor on a same-numbered line of something else. Land on its last tag line, so
+        // the edit box opens right under the comment.
+        if self.shows_worktree_lines()
+            && self.diff_path.as_deref() == Some(c.file.as_str())
+            && let Some(idx) = self.visible.iter().rposition(|row| covers(&c, row))
         {
             self.diff_cursor = idx;
             self.select_anchor = None;
         }
         self.focus = Focus::Diff;
         self.reveal_diff = true; // scroll the edited line into view before the box opens
-        self.caret = text.chars().count(); // edit opens with the caret at the end
-        self.input = text;
+        self.caret = c.text.chars().count(); // edit opens with the caret at the end
+        self.input.clone_from(&c.text);
         self.resume_list = from_list;
-        self.mode = Mode::Composing { editing: Some(i) };
+        self.mode = Mode::Composing { editing: Some(c) };
     }
 
     // --- text editing: a character caret into the active field ----------------------------
@@ -3373,31 +3454,78 @@ impl App {
         }
     }
 
-    /// Save the in-progress comment — editing the existing one or anchoring a new one
-    /// to the selection — then leave compose mode. Blank text cancels instead.
+    /// Save the in-progress comment — rewriting the existing one or writing a new one above
+    /// the selection — then leave compose mode. Blank text cancels instead. A refused write
+    /// keeps the box open with the draft, so nothing typed is lost.
     pub fn submit_comment(&mut self) {
-        let Mode::Composing { editing } = self.mode else { return };
+        let Mode::Composing { editing } = &self.mode else { return };
+        let editing = editing.clone();
         let text = self.input.trim().to_string();
         if text.is_empty() {
             self.cancel_comment();
             return;
         }
-        match editing {
-            Some(i) => {
-                logln!("comment edit [{i}] :: {text}");
-                self.store.edit(i, text);
-                self.status = "comment updated".to_string();
+        let (file, written) = match &editing {
+            Some(c) => {
+                logln!("comment edit {} :: {text}", c.location());
+                (c.file.clone(), review::rewrite(&self.repo, c, &text))
             }
-            None => {
-                if let Some(c) = self.build_comment(text) {
-                    logln!("comment add {} :: {}", c.location(), c.text);
-                    self.store.add(c);
-                    self.status = "comment added".to_string();
+            None => match self.placement() {
+                Ok((file, at)) => {
+                    logln!("comment add {file}:{} :: {text}", at.before);
+                    let written = review::add(&self.repo, &file, &at, &text);
+                    (file, written)
                 }
+                Err(refusal) => {
+                    self.status = refusal;
+                    return;
+                }
+            },
+        };
+        match written {
+            Ok(()) => {
+                let verb = if editing.is_some() { "updated" } else { "added" };
+                self.status = format!("comment {verb}");
+                self.select_anchor = None;
+                self.leave_compose();
+                self.comment_written(&file);
             }
+            Err(e) => self.comment_refused(&e),
         }
-        self.select_anchor = None;
-        self.leave_compose();
+    }
+
+    /// After a write: re-read the file's comments so the list shows the change before the next
+    /// scan, remember an ignored file for that scan, and reopen the open view so its tag lines
+    /// paint. The poll catches the changeset's counts up.
+    fn comment_written(&mut self, file: &str) {
+        if git::is_ignored(&self.repo, file) {
+            self.ignored_comment_files.insert(file.to_string());
+        }
+        let highlighted = self.store.get(self.list_cursor).cloned();
+        self.store.replace_file(file, review::reparse(&self.repo, file));
+        self.follow_list_cursor(highlighted.as_ref());
+        self.reopen_view();
+        self.request_world_refresh(false);
+    }
+
+    /// A refused write: say why. A file that changed on disk reopens the view, so the next
+    /// try places against what the file holds now.
+    fn comment_refused(&mut self, e: &review::WriteError) {
+        logln!("comment write refused: {e:?}");
+        self.status = e.status();
+        if matches!(e, review::WriteError::Changed) {
+            self.reopen_view();
+            self.request_world_refresh(false);
+        }
+    }
+
+    /// Re-read the open file into the read pane, in place: the same path, cursor and scroll,
+    /// clamped to the fresh rows.
+    fn reopen_view(&mut self) {
+        if let Some(path) = self.diff_path.clone() {
+            let previous_path = self.diff.previous_path.clone();
+            self.open_path_in_tab(path, previous_path);
+        }
     }
 
     /// Whether the selection has at least one content row a comment can attach to —
@@ -3407,45 +3535,14 @@ impl App {
         self.visible.get(lo..=hi).is_some_and(|s| s.iter().any(Row::is_content))
     }
 
-    /// The `(side, start, end, snippet)` the current selection anchors to.
-    fn selection_anchor(&self) -> Option<(Side, u32, u32, String)> {
-        let (lo, hi) = self.selection_range();
-        anchor(self.visible.get(lo..=hi)?)
-    }
-
-    fn build_comment(&self, text: String) -> Option<Comment> {
-        // Anchor to the file the open diff belongs to (`diff_path`), not the file-list
-        // selection — they diverge if the list shifts under a comment in progress.
-        let file = self.diff_path.clone()?;
-        let (side, start, end, lines) = self.selection_anchor()?;
-        // The File view marks every comment as content-anchored, so it ages by file existence,
-        // not changeset membership.
-        let diff_anchored = self.diff.view == View::Diff;
-        // A content comment reads the worktree whatever the scope.
-        let rev = if diff_anchored { self.current_rev() } else { Rev::Worktree };
-        Some(Comment { file, side, start, end, lines, text, diff_anchored, rev })
-    }
-
-    /// The `path:line` the composer is anchored to (selection for a new comment,
-    /// the existing location when editing). `None` when not composing.
+    /// The `path:line` the composer is anchored to: the line a new comment goes above, or
+    /// an edited comment's own lines. `None` when not composing.
     pub fn pending_location(&self) -> Option<String> {
-        match self.mode {
-            Mode::Composing { editing: Some(i) } => self.store.get(i).map(Comment::location),
+        match &self.mode {
+            Mode::Composing { editing: Some(c) } => Some(c.location()),
             Mode::Composing { editing: None } => {
-                let file = self.diff_path.clone()?;
-                let (side, start, end, _) = self.selection_anchor()?;
-                // Only `location()` is read here, which ignores `diff_anchored`.
-                let c = Comment {
-                    file,
-                    side,
-                    start,
-                    end,
-                    lines: String::new(),
-                    text: String::new(),
-                    diff_anchored: true,
-                    rev: Rev::Worktree,
-                };
-                Some(c.location())
+                let (file, at) = self.placement().ok()?;
+                Some(format!("{file}:{}", at.before))
             }
             Mode::Normal
             | Mode::List
@@ -3457,61 +3554,18 @@ impl App {
         }
     }
 
-    /// Whether comment `c` anchors to the pane's current view — a diff comment to the Diff view,
-    /// a content comment to the File view. Stops a comment of one kind rendering on, or being
-    /// acted on at, an unrelated line in the other tab's view of the same file (the diff's line
-    /// numbering and the File view's worktree line numbering differ).
-    /// A diff comment also renders only while the scope reads its new side from the comment's
-    /// `rev`, so a commit comment never lands on a worktree line.
-    fn comment_in_view(&self, c: &Comment) -> bool {
-        if c.diff_anchored != (self.diff.view == View::Diff) {
-            return false;
-        }
-        self.rev_is_current(c)
-    }
-
-    /// Whether the active scope reads the diff `c` was made on: a worktree comment under any
-    /// worktree scope, a commit comment under its own pick. Compared in place, since the
-    /// render path asks per row and comment.
-    fn rev_is_current(&self, c: &Comment) -> bool {
-        match &c.rev {
-            Rev::Worktree => {
-                !c.diff_anchored || self.scope != Scope::Commits || self.commit_pick.is_none()
-            }
-            Rev::Commit(p) => self.scope == Scope::Commits && self.commit_pick.as_ref() == Some(p),
-        }
-    }
-
-    /// Row indices on the open diff's file that a comment anchors to.
+    /// Row indices of the open file's comment lines, for the gutter mark and `n`/`N`.
     pub fn commented_lines(&self) -> HashSet<usize> {
-        let Some(file) = self.diff_path.clone() else {
+        let Some(file) = self.diff_path.as_deref() else { return HashSet::new() };
+        if !self.shows_worktree_lines() {
             return HashSet::new();
-        };
+        }
+        let here: Vec<&Comment> = self.store.iter().filter(|c| c.file == file).collect();
         self.visible
             .iter()
             .enumerate()
-            .filter(|(_, row)| {
-                self.store
-                    .iter()
-                    .any(|c| c.file == file && self.comment_in_view(c) && line_in(c, row))
-            })
+            .filter(|(_, row)| here.iter().any(|c| covers(c, row)))
             .map(|(i, _)| i)
-            .collect()
-    }
-
-    /// The comment-card anchors as (row, store index) pairs, store-ordered. A comment's card
-    /// sits under the last visible row its line range covers, so the renderer can splice it
-    /// inline (always visible) and the geometry stays anchored to a real row. The one card
-    /// map: the layout walk, the row heights, and the hit tests all read it.
-    pub fn card_rows(&self) -> Vec<(usize, usize)> {
-        let Some(file) = self.diff_path.as_deref() else { return Vec::new() };
-        self.store
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.file == file && self.comment_in_view(c))
-            .filter_map(|(ci, c)| {
-                self.visible.iter().rposition(|row| line_in(c, row)).map(|last| (last, ci))
-            })
             .collect()
     }
 
@@ -3524,34 +3578,39 @@ impl App {
         self.comment_under_cursor()
     }
 
-    /// The store index of a comment whose range covers the current diff row, if any.
+    /// The store index of the comment whose tag lines hold the diff cursor, if any.
     fn comment_under_cursor(&self) -> Option<usize> {
         let file = self.diff_path.as_deref()?;
+        if !self.shows_worktree_lines() {
+            return None;
+        }
         let row = self.visible.get(self.diff_cursor)?;
-        self.store.iter().position(|c| c.file == file && self.comment_in_view(c) && line_in(c, row))
+        self.store.iter().position(|c| c.file == file && covers(c, row))
     }
 
+    /// Remove the targeted comment's lines from its file.
     pub fn delete_comment(&mut self) {
-        // Cards don't show in the preview: `d` only acts through the comments-list overlay.
+        // The preview paints no tag lines: `d` only acts through the comments-list overlay.
         if self.preview_active() && self.mode != Mode::List {
             return;
         }
-        if let Some(i) = self.target_comment() {
-            logln!("comment delete [{i}]");
-            self.store.take(i);
-            self.clamp_list_cursor();
-            self.status = "comment deleted".to_string();
-            // Don't strand the user in an empty "Comments (0)" overlay, matching `export`.
-            if self.store.is_empty() {
-                self.close_list();
+        let Some(c) = self.target_comment().and_then(|i| self.store.get(i)).cloned() else {
+            return;
+        };
+        logln!("comment delete {}", c.location());
+        match review::delete(&self.repo, &c) {
+            Ok(()) => {
+                self.status = "comment deleted".to_string();
+                self.comment_written(&c.file);
             }
+            Err(e) => self.comment_refused(&e),
         }
     }
 
     /// Move the diff cursor to the next (`dir >= 0`) or previous commented line.
     pub fn jump_comment(&mut self, dir: isize) {
         if self.preview_active() {
-            return; // no cursor and no cards in the preview
+            return; // no cursor and no tag lines in the preview
         }
         let mut idxs: Vec<usize> = self.commented_lines().into_iter().collect();
         if idxs.is_empty() {
@@ -4069,15 +4128,24 @@ impl App {
         } else if self.on_fold() {
             out.push((A::ExpandFold, Primary));
         } else if self.select_anchor.is_some() {
-            out.push((A::Comment, Primary));
-            out.push((A::ClearSelection, Do));
+            // A `commits` diff shows a commit's lines, which no comment can be written into.
+            if self.shows_worktree_lines() {
+                out.push((A::Comment, Primary));
+                out.push((A::ClearSelection, Do));
+            } else {
+                out.push((A::ClearSelection, Primary));
+            }
         } else if self.comment_claims_edit() {
             out.push((A::EditComment, Primary));
             out.push((A::DeleteComment, Do));
             out.push((A::JumpComment, Do));
         } else {
-            out.push((A::Comment, Primary));
-            out.push((A::Select, Do));
+            if self.shows_worktree_lines() {
+                out.push((A::Comment, Primary));
+                out.push((A::Select, Do));
+            } else {
+                out.push((A::Select, Primary));
+            }
             // On a markdown file's source line that previews, surface the way in —
             // otherwise the rendered view is undiscoverable. A deleted
             // file, holding no current content, offers nothing.
@@ -4473,21 +4541,20 @@ impl App {
         self.commit_picker = Some(fresh);
     }
 
-    /// Send/copy every written comment to `target`; consume the whole set only on
-    /// success. A failed export leaves all comments in place.
-    /// Reports whether the comments were delivered.
+    /// Copy every comment to `target`. Export never consumes: the comments stay in their files
+    /// until something removes them (design doc §8). Reports whether the comments were
+    /// delivered.
     pub fn export(&mut self, target: &dyn ExportTarget) -> bool {
         if self.store.is_empty() {
-            self.status = "no comments to send".to_string();
+            self.status = "no comments to copy".to_string();
             return false;
         }
         let refs: Vec<&Comment> = self.store.iter().collect();
         let text = format_all(&refs);
         let n = refs.len();
         logln!("export ({n}) -> {} ::\n{text}", target.label());
-        let delivered = match target.export(&text) {
+        match target.export(&text) {
             Ok(()) => {
-                self.store.take_all();
                 self.status = target.success_message(n);
                 logln!("export OK");
                 true
@@ -4497,12 +4564,7 @@ impl App {
                 logln!("export ERR: {e:#}");
                 false
             }
-        };
-        self.clamp_list_cursor();
-        if self.store.is_empty() {
-            self.close_list();
         }
-        delivered
     }
 
     /// The number of files changed in the active scope — the header count, the same on both
@@ -4517,17 +4579,6 @@ impl App {
         self.changed.values().fold((0, 0), |(added, removed), a| {
             (added.saturating_add(a.additions), removed.saturating_add(a.deletions))
         })
-    }
-
-    /// Whether a comment's anchor may have moved. A diff comment is stale once its file leaves
-    /// the changeset; a File-view (content) comment only once its file is gone from the
-    /// worktree, since it was never tied to the changeset.
-    pub fn is_stale(&self, c: &Comment) -> bool {
-        if c.diff_anchored {
-            !self.changed.contains_key(&c.file)
-        } else {
-            !self.repo.join(&c.file).exists()
-        }
     }
 
     fn clamp_list_cursor(&mut self) {
@@ -4662,46 +4713,30 @@ fn worktree_content(repo: &std::path::Path, path: &str) -> String {
         .unwrap_or_default()
 }
 
-fn line_in(c: &Comment, row: &Row) -> bool {
-    let no = match c.side {
-        Side::New => row.new_no(),
-        Side::Old => row.old_no(),
-    };
-    no.is_some_and(|n| c.start <= n && n <= c.end)
-}
-
-/// Compute `(side, start, end, snippet)` for a selection of diff rows.
-///
-/// New-side numbers win when present (insertion/context rows); a pure deletion
-/// anchors to the old side. The snippet keeps each row's `+`/`−`/space marker.
-fn anchor(selected: &[Row]) -> Option<(Side, u32, u32, String)> {
-    let mut new: Option<(u32, u32)> = None;
-    let mut old: Option<(u32, u32)> = None;
-    let mut snippet = String::new();
-    for row in selected.iter().filter(|row| row.is_content()) {
-        if !snippet.is_empty() {
-            snippet.push('\n');
-        }
-        snippet.push_str(&row.marker_text());
-        if let Some(line) = row.new_no() {
-            new = Some(new.map_or((line, line), |(min, max)| (min.min(line), max.max(line))));
-        }
-        if let Some(line) = row.old_no() {
-            old = Some(old.map_or((line, line), |(min, max)| (min.min(line), max.max(line))));
-        }
-    }
-    let (side, (start, end)) =
-        new.map(|range| (Side::New, range)).or_else(|| old.map(|range| (Side::Old, range)))?;
-    Some((side, start, end, snippet))
+/// Whether `row` is one of comment `c`'s tag lines.
+fn covers(c: &Comment, row: &Row) -> bool {
+    row.new_no().is_some_and(|n| c.start <= n && n <= c.end)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{App, Mode};
     use crate::config::NavigatorPosition;
-    use crate::model::{Comment, CommitPick, Scope, Side};
+    use crate::model::{Comment, CommitPick, Scope};
     use crate::world::{PickStatus, PickVerdict};
     use std::path::PathBuf;
+
+    /// A one-line comment as a scan would find it at `line`.
+    fn comment_at(file: &str, line: u32, text: &str) -> Comment {
+        Comment {
+            file: file.into(),
+            start: line,
+            end: line,
+            text: text.into(),
+            deleted: None,
+            anchor: None,
+        }
+    }
 
     #[test]
     fn config_recovery_carries_an_open_preview() {
@@ -4786,16 +4821,7 @@ mod tests {
     #[test]
     fn config_recovery_carries_saved_comments_and_the_live_draft() {
         let mut old = App::blocked(PathBuf::from("."), Scope::Uncommitted, None);
-        old.store.add(Comment {
-            file: "src/lib.rs".to_string(),
-            side: Side::New,
-            start: 1,
-            end: 1,
-            lines: "+line".to_string(),
-            text: "saved".to_string(),
-            diff_anchored: true,
-            rev: crate::model::Rev::Worktree,
-        });
+        old.store.replace_all(vec![comment_at("src/lib.rs", 1, "saved")]);
         old.mode = Mode::Composing { editing: None };
         old.resume_list = true;
         old.input = "draft".to_string();
@@ -4927,16 +4953,7 @@ mod tests {
     fn a_commented_line_keeps_edit_for_its_comment() {
         use super::EditTarget;
         let mut app = edit_app();
-        app.store.add(crate::model::Comment {
-            file: "src/lib.rs".into(),
-            side: Side::New,
-            start: 12,
-            end: 12,
-            lines: "+x".into(),
-            text: "note".into(),
-            diff_anchored: true,
-            rev: crate::model::Rev::Worktree,
-        });
+        app.store.replace_all(vec![comment_at("src/lib.rs", 12, "note")]);
         app.diff_cursor = 2;
         app.start_edit();
         assert!(app.composing(), "the comment under the cursor claims the key");
@@ -4956,28 +4973,19 @@ mod tests {
 
     #[test]
     fn a_preview_over_a_commented_line_opens_the_file() {
-        // Cards are not painted in a preview, so nothing on screen claims the key and the
+        // A preview paints no tag lines, so nothing on screen claims the key and the
         // previewed file wins it, even with the source cursor on a comment
         // The table above cannot assert this: its footer expectation
         // is derived from `comment_claims_edit`, so only an outcome catches a wrong predicate.
         use super::EditTarget;
         let mut app = edit_app();
-        app.store.add(crate::model::Comment {
-            file: "src/lib.rs".into(),
-            side: Side::New,
-            start: 10,
-            end: 10,
-            lines: "+x".into(),
-            text: "note".into(),
-            diff_anchored: true,
-            rev: crate::model::Rev::Worktree,
-        });
+        app.store.replace_all(vec![comment_at("src/lib.rs", 10, "note")]);
         app.diff_cursor = 0;
         app.preview_text = "# heading".into();
         app.preview = true;
 
         app.start_edit();
-        assert!(!app.composing(), "an invisible card does not claim the key");
+        assert!(!app.composing(), "an unpainted comment does not claim the key");
         assert_eq!(
             app.editor_request,
             Some(EditTarget { path: "src/lib.rs".into(), line: 1 }),
@@ -4988,16 +4996,7 @@ mod tests {
     #[test]
     fn a_live_selection_freezes_both_branches_of_edit() {
         let mut app = edit_app();
-        app.store.add(crate::model::Comment {
-            file: "src/lib.rs".into(),
-            side: Side::New,
-            start: 12,
-            end: 12,
-            lines: "+x".into(),
-            text: "note".into(),
-            diff_anchored: true,
-            rev: crate::model::Rev::Worktree,
-        });
+        app.store.replace_all(vec![comment_at("src/lib.rs", 12, "note")]);
         app.diff_cursor = 2;
         app.toggle_select();
         assert!(app.select_anchor.is_some(), "v starts a selection on a commented line");
@@ -5017,20 +5016,11 @@ mod tests {
     #[test]
     fn edit_from_the_navigator_ignores_a_comment_on_the_hidden_diff_cursor() {
         let mut app = edit_app();
-        app.store.add(crate::model::Comment {
-            file: "src/lib.rs".into(),
-            side: Side::New,
-            start: 10,
-            end: 10,
-            lines: "+x".into(),
-            text: "note".into(),
-            diff_anchored: true,
-            rev: crate::model::Rev::Worktree,
-        });
+        app.store.replace_all(vec![comment_at("src/lib.rs", 10, "note")]);
         app.diff_cursor = 0;
         app.focus = crate::Focus::Files;
         app.start_edit();
-        assert!(!app.composing(), "the card is off screen, so it does not claim the key");
+        assert!(!app.composing(), "the comment is off screen, so it does not claim the key");
         assert!(app.editor_request.is_some(), "the file row under the eye wins");
     }
 }

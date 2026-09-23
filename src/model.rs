@@ -1,7 +1,7 @@
-//! In-memory review model: scopes, changed files, and comments.
+//! Review model: scopes, changed files, and comments.
 //!
-//! Comments live only for the session and are
-//! removed by export or delete — never by a refresh.
+//! Comments live in the source files as tag lines (`review.rs`); the store here only holds
+//! the last scan of them.
 
 /// Which set of changes the Changes view shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,15 +60,6 @@ impl CommitPick {
     }
 }
 
-/// Where a comment's diff was read: the worktree, or the picked run it came from. A diff
-/// comment renders only while the active scope reads the same diff, both sides: a run and
-/// its newest commit alone share a new side but not an old one.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Rev {
-    Worktree,
-    Commit(CommitPick),
-}
-
 /// How a file changed within a scope.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChangeKind {
@@ -103,46 +94,62 @@ pub struct ChangedFile {
     pub previous_path: Option<String>,
 }
 
-/// Which side of the diff a comment's lines live on.
+/// Which side of the diff a line lives on. Only the PR-snippet leftover (`snippet.rs`) reads
+/// it: a comment in the file always sits on the new side.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
     New,
     Old,
 }
 
-/// A reviewer comment anchored to a run of diff lines, carrying the snippet.
+/// A review comment: one run of consecutive tag lines in a worktree file (design doc §3.1).
+/// The file is the only store, so a `Comment` is only ever a parse of it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Comment {
     pub file: String,
-    pub side: Side,
+    /// The tag lines' 1-based line span in the file.
     pub start: u32,
     pub end: u32,
-    /// Verbatim diff lines the comment anchors to, each keeping its `+`/`-`/space marker.
-    pub lines: String,
+    /// The text after the tag, one line per tag line.
     pub text: String,
-    /// True when anchored to a diff (the `Changes` tab); false for a File-view content comment
-    /// (the `All files` tab). Selects how staleness is judged.
-    pub diff_anchored: bool,
-    /// Where the new side was read.
-    pub rev: Rev,
+    /// The start of the removed line a `[DELETED: (...)]` comment was left on (§3.3).
+    pub deleted: Option<String>,
+    /// The line the comment annotates, the first below its tag lines, verbatim; `None` when
+    /// the comment ends the file.
+    pub anchor: Option<String>,
 }
 
 impl Comment {
-    /// The `path:start-end` (or `path:line`) location, with ` (removed)` when old-side.
+    /// The `path:start-end` (or `path:line`) span of the tag lines.
     pub fn location(&self) -> String {
-        let range = if self.start == self.end {
+        if self.start == self.end {
             format!("{}:{}", self.file, self.start)
         } else {
             format!("{}:{}-{}", self.file, self.start, self.end)
-        };
-        match self.side {
-            Side::New => range,
-            Side::Old => format!("{range} (removed)"),
         }
+    }
+
+    /// The text as the list and the export show it: the `[DELETED: (...)]` marker, when
+    /// there is one, leads the first line.
+    pub fn display_text(&self) -> String {
+        match &self.deleted {
+            Some(d) => format!("[DELETED: ({d})] {}", self.text),
+            None => self.text.clone(),
+        }
+    }
+
+    /// Whether `other` is the same comment for reconciling place state: same file, text,
+    /// and annotated line, wherever a refresh moved it (Continuity).
+    pub fn same_identity(&self, other: &Comment) -> bool {
+        self.file == other.file
+            && self.text == other.text
+            && self.deleted == other.deleted
+            && self.anchor == other.anchor
     }
 }
 
-/// The in-memory comment list for one worktree review session.
+/// The comments the last scan found, sorted by file then line. Derived state: only a scan
+/// (`replace_all`) or a write that re-read its own file (`replace_file`) changes it.
 #[derive(Default, Debug)]
 pub struct CommentStore {
     items: Vec<Comment>,
@@ -169,47 +176,41 @@ impl CommentStore {
         self.items.get(index)
     }
 
-    /// Append a comment; returns its index.
-    pub fn add(&mut self, comment: Comment) -> usize {
-        self.items.push(comment);
-        self.items.len() - 1
+    /// Adopt a whole scan.
+    pub fn replace_all(&mut self, mut comments: Vec<Comment>) {
+        sort(&mut comments);
+        self.items = comments;
     }
 
-    /// Replace the text of the comment at `index`. Returns `false` if out of range.
-    pub fn edit(&mut self, index: usize, text: String) -> bool {
-        if let Some(c) = self.items.get_mut(index) {
-            c.text = text;
-            true
-        } else {
-            false
-        }
+    /// Adopt one file's fresh parse, so a write shows before the next scan lands.
+    pub fn replace_file(&mut self, file: &str, comments: Vec<Comment>) {
+        self.items.retain(|c| c.file != file);
+        self.items.extend(comments);
+        sort(&mut self.items);
     }
 
-    /// Remove and return the comment at `index` (delete, or consume one on export).
-    pub fn take(&mut self, index: usize) -> Option<Comment> {
-        if index < self.items.len() { Some(self.items.remove(index)) } else { None }
+    /// The index of the comment `c` names by identity (`Comment::same_identity`).
+    pub fn position_of(&self, c: &Comment) -> Option<usize> {
+        self.items.iter().position(|it| it.same_identity(c))
     }
+}
 
-    /// Remove and return every comment (consume-all on a successful export).
-    pub fn take_all(&mut self) -> Vec<Comment> {
-        std::mem::take(&mut self.items)
-    }
+fn sort(comments: &mut [Comment]) {
+    comments.sort_by(|a, b| a.file.cmp(&b.file).then(a.start.cmp(&b.start)));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Comment, CommentStore, Rev, Scope, Side};
+    use super::{Comment, CommentStore, Scope};
 
     fn comment(file: &str, start: u32, end: u32, text: &str) -> Comment {
         Comment {
             file: file.into(),
-            side: Side::New,
             start,
             end,
-            lines: "+x".into(),
             text: text.into(),
-            diff_anchored: true,
-            rev: Rev::Worktree,
+            deleted: None,
+            anchor: Some("x".into()),
         }
     }
 
@@ -232,37 +233,39 @@ mod tests {
     }
 
     #[test]
-    fn location_formats_range_single_and_removed() {
+    fn location_formats_range_and_single_line() {
         let mut c = comment("a.rs", 40, 52, "x");
         assert_eq!(c.location(), "a.rs:40-52");
         c.end = 40;
         assert_eq!(c.location(), "a.rs:40");
-        c.side = Side::Old;
-        assert_eq!(c.location(), "a.rs:40 (removed)");
     }
 
     #[test]
-    fn add_get_edit() {
-        let mut s = CommentStore::new();
-        let i = s.add(comment("a.rs", 1, 1, "first"));
-        assert_eq!(s.len(), 1);
-        assert_eq!(s.get(i).unwrap().text, "first");
-        assert!(s.edit(i, "second".into()));
-        assert_eq!(s.get(i).unwrap().text, "second");
-        assert!(!s.edit(99, "nope".into()));
+    fn display_text_leads_with_the_deleted_marker() {
+        let mut c = comment("a.rs", 1, 1, "load-bearing");
+        assert_eq!(c.display_text(), "load-bearing");
+        c.deleted = Some("let ok = validat".into());
+        assert_eq!(c.display_text(), "[DELETED: (let ok = validat)] load-bearing");
     }
 
     #[test]
-    fn take_one_and_take_all_consume() {
+    fn replace_file_swaps_one_file_and_keeps_the_sort() {
         let mut s = CommentStore::new();
-        s.add(comment("a.rs", 1, 1, "one"));
-        s.add(comment("b.rs", 2, 2, "two"));
-        let taken = s.take(0).unwrap();
-        assert_eq!(taken.text, "one");
+        s.replace_all(vec![comment("b.rs", 5, 5, "b"), comment("a.rs", 9, 9, "a9")]);
+        assert_eq!(s.get(0).unwrap().file, "a.rs");
+        s.replace_file("a.rs", vec![comment("a.rs", 2, 2, "a2"), comment("a.rs", 7, 7, "a7")]);
+        let texts: Vec<&str> = s.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["a2", "a7", "b"]);
+        s.replace_file("a.rs", Vec::new());
         assert_eq!(s.len(), 1);
-        let rest = s.take_all();
-        assert_eq!(rest.len(), 1);
-        assert!(s.is_empty());
-        assert!(s.take(0).is_none());
+    }
+
+    #[test]
+    fn position_of_matches_by_identity_not_line() {
+        let mut s = CommentStore::new();
+        s.replace_all(vec![comment("a.rs", 3, 3, "one"), comment("a.rs", 8, 8, "two")]);
+        // Lines shifted by an edit above: still the same comment.
+        assert_eq!(s.position_of(&comment("a.rs", 12, 12, "two")), Some(1));
+        assert_eq!(s.position_of(&comment("a.rs", 8, 8, "gone")), None);
     }
 }

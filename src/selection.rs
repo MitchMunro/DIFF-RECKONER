@@ -15,9 +15,6 @@ pub enum Surface {
     /// The read pane's painted lines (markdown preview, `PR` read pane): character-precise
     /// painted text.
     Painted,
-    /// A spliced comment card in the read pane: character-precise card text, confined to the
-    /// card it started on (`TS-ONE-SURFACE`).
-    Card { comment: usize },
     /// The file navigator: row-granular, a row copies its repo-relative path.
     Files,
 }
@@ -89,7 +86,7 @@ pub fn read_text(rows: &[Row], a: Point, b: Point) -> String {
     out.join("\n")
 }
 
-/// The clipboard text for a selection over prebuilt line texts (painted surfaces and cards):
+/// The clipboard text for a selection over prebuilt line texts (painted surfaces):
 /// whole lines between the endpoints, the first and last cut at them.
 #[must_use]
 pub fn lines_text(lines: &[String], a: Point, b: Point) -> String {

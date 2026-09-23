@@ -9,11 +9,27 @@ mouse handling, syntax highlighting and diff engine are his work.
 
 ## Status
 
-Early. This commit is the strip: the fork with herdr, the PR tab, the `last turn` scope and
-the agent-send export removed. The four features the design doc calls for — in-file
-`[- REVIEW -]` comments, the whole-repo comment sweep, the Comments tab, and the
-terminal-palette colour model — are not built yet. See
-`diff-reckoner-design-doc.md`.
+Early. The fork has herdr, the PR tab, the `last turn` scope and the agent-send export
+removed, and comments are written into the files themselves. Still to come from the design
+doc: the whole-repo comment sweep, the Comments tab, and the terminal-palette colour model.
+See `diff-reckoner-design-doc.md`.
+
+## Comments
+
+`c` writes a comment into the file, directly above the line under the cursor, as a line
+comment in the file's own syntax. Every line of it carries the tag:
+
+```rust
+// [- REVIEW -] this lock is held across an await
+```
+
+The file is the only store: `e` rewrites a comment in place, `d` removes its lines, and a
+comment an agent deletes leaves the list on the next refresh. A comment on a removed line goes
+above the nearest surviving line and starts with `[DELETED: (...)]`, quoting the removed
+line's first 16 characters. Markdown and plain text files take the tag on a bare line with no
+comment marker. Files with no line-comment syntax (JSON, CSV) refuse a comment, and a
+git-ignored file takes one only on a second `c`. `y` copies every comment to the clipboard
+and leaves them in place.
 
 ## Build
 

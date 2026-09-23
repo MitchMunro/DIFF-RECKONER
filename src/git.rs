@@ -544,6 +544,34 @@ pub fn merge_base(repo: &Path, base_oid: &str) -> Option<String> {
     git_line(repo, &["merge-base", base_oid, "HEAD"])
 }
 
+/// The worktree files, tracked and untracked but not ignored, whose text contains `needle`
+/// verbatim. Binary files are skipped. `git grep` exits 1 for no match, which is an empty
+/// list here, not a failure.
+pub fn files_containing(repo: &Path, needle: &str) -> Result<Vec<String>> {
+    let args = ["grep", "-l", "-z", "-I", "--untracked", "--fixed-strings", "-e", needle];
+    let out = crate::proc::command("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["-c", "core.quotepath=false"])
+        .args(args)
+        .output()
+        .with_context(|| format!("running git {args:?}"))?;
+    match out.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&out.stdout)
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()),
+        Some(1) => Ok(Vec::new()),
+        _ => bail!("git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
+    }
+}
+
+/// Whether git ignores `path` (`git check-ignore`).
+pub fn is_ignored(repo: &Path, path: &str) -> bool {
+    git_ok(repo, &["check-ignore", "-q", "--", path])
+}
+
 /// The content of `path` at `rev` (`git show <rev>:<path>`). Empty when the path does
 /// not exist at that rev — an added file against its old side, say.
 pub fn file_content(repo: &Path, rev: &str, path: &str) -> String {

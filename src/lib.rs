@@ -23,6 +23,7 @@ pub mod log;
 pub mod markdown;
 pub mod model;
 pub mod proc;
+pub mod review;
 pub mod search;
 pub mod selection;
 pub mod snippet;
@@ -223,7 +224,7 @@ fn run_editor(
     if !command.wants_terminal {
         // A window editor never reads the terminal, so diff-reckoner keeps it. The reviewer keeps
         // the diff on screen, and raw mode stays on, which is what keeps a `ctrl+c` in the
-        // pane a key event rather than a signal that would take the comment store with it
+        // pane a key event rather than a signal that would take an unsaved draft with it
         // Nothing waits on it either: the poll shows the write. The
         // launchers that have since exited are collected here, so a session leaves none behind.
         open.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
@@ -1114,6 +1115,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
     if !matches!(action, Some(K::NextHunk | K::PrevHunk)) && key.code != Esc {
         app.disarm_cross();
     }
+    // The git-ignored warning holds for the very next `comment` press only.
+    if action != Some(K::Comment) {
+        app.ignored_confirm = None;
+    }
 
     // The base picker: every printable narrows the filter — the bound shortcuts included, so
     // a branch named `qa` is typable — and the filter edits with the comment editor's
@@ -1300,10 +1305,6 @@ fn handle_text_down(app: &mut App, m: MouseEvent, area: Rect) -> bool {
         arm(app, Surface::Read, point);
         return true;
     }
-    if let Some((comment, point)) = ui::card_point_at(area, app, m.column, m.row) {
-        arm(app, Surface::Card { comment }, point);
-        return true;
-    }
     if let Some(point) = ui::painted_point(area, app, m.column, m.row, false) {
         arm(app, Surface::Painted, point);
         return true;
@@ -1350,9 +1351,6 @@ fn text_drag_edge_scroll(app: &mut App, m: MouseEvent, area: Rect) {
     let Some(drag) = app.text_drag() else { return };
     match drag.surface {
         Surface::Read => read_edge_scroll(app, m, area, true),
-        // Card text ignores h-scroll, so a card drag scrolls vertically only —
-        // the gesture never moves a surface it is not on (TS-ONE-SURFACE).
-        Surface::Card { .. } => read_edge_scroll(app, m, area, false),
         Surface::Files => {
             let inner = ui::files_inner_rect(area, app);
             let delta = edge_delta(m.row, inner);
@@ -1380,7 +1378,6 @@ fn text_drag_set_extent(app: &mut App, m: MouseEvent, area: Rect) {
     let Some(drag) = app.text_drag() else { return };
     let extent = match drag.surface {
         Surface::Read => ui::read_point_clamped(area, app, m.column, m.row),
-        Surface::Card { comment } => ui::card_point_clamped(area, app, comment, m.column, m.row),
         Surface::Painted => ui::painted_point(area, app, m.column, m.row, true),
         Surface::Files => {
             let inner = ui::files_inner_rect(area, app);
@@ -1463,14 +1460,14 @@ fn finish_text_drag(
             }
             // A double on a character surface copies the word under the cell; whitespace
             // and wordless cells act as the click.
-            Surface::Read | Surface::Painted | Surface::Card { .. } if count == 2 => {
+            Surface::Read | Surface::Painted if count == 2 => {
                 if !word_click_copy(app, area, drag, target) && clicks_act {
                     perform_click(app, m, area, heights, drag)?;
                 }
             }
             // A triple on a character surface copies the row's whole source line; an
             // empty line acts as the click.
-            Surface::Read | Surface::Painted | Surface::Card { .. } if count >= 3 => {
+            Surface::Read | Surface::Painted if count >= 3 => {
                 if !line_click_copy(app, area, drag, target) && clicks_act {
                     perform_click(app, m, area, heights, drag)?;
                 }
@@ -1497,16 +1494,15 @@ fn multi_click_copy(
     use crate::selection::Point;
     let row = drag.anchor.row;
     let whole_row = Point { row, chr: usize::MAX };
-    match surface_text(app, area, drag.surface, Point { row, chr: 0 }, whole_row) {
-        // An empty row yields empty text: fall back to the click, so the gesture is never
-        // a silent no-op.
-        Some(t) if !t.is_empty() => {
-            app.copy_selection_text(target, &t);
-            app.settle_selection(drag, t);
-            true
-        }
-        _ => false,
+    let t = surface_text(app, area, drag.surface, Point { row, chr: 0 }, whole_row);
+    // An empty row yields empty text: fall back to the click, so the gesture is never a
+    // silent no-op.
+    if t.is_empty() {
+        return false;
     }
+    app.copy_selection_text(target, &t);
+    app.settle_selection(drag, t);
+    true
 }
 
 /// The word double-click copy on the character surfaces, fired at the release: the word
@@ -1521,9 +1517,7 @@ fn word_click_copy(
     use crate::selection::{Point, TextDrag};
     let row = drag.anchor.row;
     let whole_row = Point { row, chr: usize::MAX };
-    let Some(line) = surface_text(app, area, drag.surface, Point { row, chr: 0 }, whole_row) else {
-        return false;
-    };
+    let line = surface_text(app, area, drag.surface, Point { row, chr: 0 }, whole_row);
     let Some((s, e)) = crate::selection::token_at(&line, drag.anchor.chr) else {
         return false;
     };
@@ -1552,29 +1546,28 @@ fn line_click_copy(
     use crate::selection::{Point, TextDrag};
     let row = drag.anchor.row;
     let whole_row = Point { row, chr: usize::MAX };
-    match surface_text(app, area, drag.surface, Point { row, chr: 0 }, whole_row) {
-        Some(line) if !line.is_empty() => {
-            let last = line.chars().count() - 1;
-            app.copy_selection_text(target, &line);
-            app.settle_selection(
-                TextDrag {
-                    surface: drag.surface,
-                    anchor: Point { row, chr: 0 },
-                    extent: Point { row, chr: last },
-                },
-                line,
-            );
-            true
-        }
-        _ => false,
+    let line = surface_text(app, area, drag.surface, Point { row, chr: 0 }, whole_row);
+    if line.is_empty() {
+        return false;
     }
+    let last = line.chars().count() - 1;
+    app.copy_selection_text(target, &line);
+    app.settle_selection(
+        TextDrag {
+            surface: drag.surface,
+            anchor: Point { row, chr: 0 },
+            extent: Point { row, chr: last },
+        },
+        line,
+    );
+    true
 }
 
 /// The active drag's clipboard text. Public for the gesture tests, like [`handle_mouse`].
 pub fn drag_text(app: &App, area: Rect) -> Option<String> {
     let drag = app.text_drag()?;
     let (a, b) = drag.ordered();
-    surface_text(app, area, drag.surface, a, b)
+    Some(surface_text(app, area, drag.surface, a, b))
 }
 
 /// Complete the live gesture — the drag's own off-cell release, the release proofs, the
@@ -1602,18 +1595,12 @@ fn surface_text(
     surface: crate::selection::Surface,
     a: crate::selection::Point,
     b: crate::selection::Point,
-) -> Option<String> {
+) -> String {
     use crate::selection::{Surface, lines_text};
     match surface {
-        Surface::Read => Some(crate::selection::read_text(&app.visible, a, b)),
-        Surface::Files => {
-            Some(crate::selection::files_text(&app.file_rows, &app.entries, a.row, b.row))
-        }
-        Surface::Painted => Some(lines_text(&ui::painted_texts(app, area), a, b)),
-        Surface::Card { comment } => {
-            let width = ui::read_inner_rect(area, app).width as usize;
-            Some(lines_text(&ui::card_body_lines(app.store.get(comment)?, width), a, b))
-        }
+        Surface::Read => crate::selection::read_text(&app.visible, a, b),
+        Surface::Files => crate::selection::files_text(&app.file_rows, &app.entries, a.row, b.row),
+        Surface::Painted => lines_text(&ui::painted_texts(app, area), a, b),
     }
 }
 
@@ -1630,7 +1617,7 @@ fn perform_click(
         // The navigators act on the drag's already-clamped row, not the raw release cell:
         // the row slop that classified the release as a click also delivers it
         Surface::Files => app.select_file(drag.extent.row)?,
-        Surface::Read | Surface::Painted | Surface::Card { .. } => {
+        Surface::Read | Surface::Painted => {
             if let Some(url) = app.painted_link_at(m.column, m.row) {
                 app.focus = Focus::Diff;
                 app.open_link(&url);
@@ -1843,7 +1830,7 @@ pub fn handle_mouse(
             } else if let Some(i) =
                 ui::hit_diff(area, app, m.column, m.row, heights, app.diff_scroll)
             {
-                // Only non-text display lines reach here: a fold or a comment card's line.
+                // Only non-text display lines reach here: a fold.
                 app.focus = Focus::Diff;
                 app.diff_cursor = i;
                 app.select_anchor = None;

@@ -1,8 +1,7 @@
-//! Formatting comments and exporting them to the agent or clipboard.
+//! Formatting comments and exporting them to the clipboard.
 //!
-//! A comment becomes a block of `location`, the
-//! diff snippet, then the text. Export is consume-on-success: the caller removes
-//! a comment only after `export` returns `Ok`.
+//! A comment becomes a block of `location`, the line it annotates, then the text. Export
+//! never consumes: a comment lasts until something removes it from its file (design doc §8).
 
 use std::io::Write;
 use std::process::Stdio;
@@ -11,9 +10,14 @@ use anyhow::{Context, Result, bail};
 
 use crate::model::Comment;
 
-/// One comment as its export block: location, snippet, then text.
+/// One comment as its export block: location, the annotated line, then text. A comment that
+/// ends its file annotates no line, so its block has no snippet.
 pub fn format_comment(comment: &Comment) -> String {
-    format!("{}\n{}\n{}", comment.location(), comment.lines, normalize_text(&comment.text))
+    let text = normalize_text(&comment.display_text());
+    match &comment.anchor {
+        Some(line) => format!("{}\n{line}\n{text}", comment.location()),
+        None => format!("{}\n{text}", comment.location()),
+    }
 }
 
 /// Comment text for export: drop `\r`, trim trailing space per line, and drop blank
@@ -78,10 +82,8 @@ impl ExportTarget for Clipboard {
     }
 
     fn export(&self, text: &str) -> Result<()> {
-        let (cmd, args) = select_tool(CLIPBOARD_TOOLS, crate::proc::on_path).context(
-            "no clipboard tool found (install wl-clipboard, xclip, or xsel) — \
-             use Send instead",
-        )?;
+        let (cmd, args) = select_tool(CLIPBOARD_TOOLS, crate::proc::on_path)
+            .context("no clipboard tool found (install wl-clipboard, xclip, or xsel)")?;
         let mut child = crate::proc::command(cmd)
             .args(args)
             .stdin(Stdio::piped())
@@ -113,7 +115,7 @@ mod tests {
     use super::{
         CLIPBOARD_TOOLS, Clipboard, ExportTarget, format_all, format_comment, select_tool,
     };
-    use crate::model::{Comment, Side};
+    use crate::model::Comment;
 
     #[test]
     fn clipboard_tool_selection_prefers_list_order_and_can_be_empty() {
@@ -137,53 +139,60 @@ mod tests {
         assert_eq!(Clipboard.success_message(2), "copied 2 comments");
     }
 
-    fn comment(file: &str, side: Side, start: u32, end: u32, lines: &str, text: &str) -> Comment {
+    fn comment(file: &str, start: u32, end: u32, anchor: Option<&str>, text: &str) -> Comment {
         Comment {
             file: file.into(),
-            side,
             start,
             end,
-            lines: lines.into(),
             text: text.into(),
-            diff_anchored: true,
-            rev: crate::model::Rev::Worktree,
+            deleted: None,
+            anchor: anchor.map(Into::into),
         }
     }
 
     #[test]
-    fn block_is_location_snippet_text() {
+    fn block_is_location_annotated_line_text() {
         let c = comment(
             "extruct/core/llm_registry.py",
-            Side::New,
             40,
             41,
-            "-from .z import w\n+from .x import y",
-            "this import path looks wrong",
+            Some("from .x import y"),
+            "this import path\nlooks wrong",
         );
         assert_eq!(
             format_comment(&c),
-            "extruct/core/llm_registry.py:40-41\n-from .z import w\n+from .x import y\nthis import path looks wrong"
+            "extruct/core/llm_registry.py:40-41\nfrom .x import y\nthis import path\nlooks wrong"
         );
     }
 
     #[test]
-    fn removed_side_marks_the_header() {
-        let c = comment("a.rs", Side::Old, 38, 38, "-    cleanup()", "still needed");
-        assert_eq!(format_comment(&c), "a.rs:38 (removed)\n-    cleanup()\nstill needed");
+    fn a_deleted_line_comment_leads_with_its_marker() {
+        let mut c = comment("a.rs", 38, 38, Some("    finish();"), "still needed");
+        c.deleted = Some("cleanup();".into());
+        assert_eq!(
+            format_comment(&c),
+            "a.rs:38\n    finish();\n[DELETED: (cleanup();)] still needed"
+        );
+    }
+
+    #[test]
+    fn a_comment_ending_the_file_has_no_snippet() {
+        let c = comment("a.rs", 9, 9, None, "trailing");
+        assert_eq!(format_comment(&c), "a.rs:9\ntrailing");
     }
 
     #[test]
     fn multiline_text_keeps_breaks_but_drops_blank_lines() {
-        let c = comment("a.rs", Side::New, 1, 1, "+x", "first line\n\n  \nsecond line\n");
-        assert_eq!(format_comment(&c), "a.rs:1\n+x\nfirst line\nsecond line");
+        let c = comment("a.rs", 1, 1, Some("x"), "first line\n\n  \nsecond line\n");
+        assert_eq!(format_comment(&c), "a.rs:1\nx\nfirst line\nsecond line");
     }
 
     #[test]
     fn all_sorts_by_file_then_start_with_blank_separator() {
-        let b = comment("b.rs", Side::New, 5, 5, "+x", "two");
-        let a2 = comment("a.rs", Side::New, 20, 20, "+y", "later");
-        let a1 = comment("a.rs", Side::New, 3, 3, "+z", "earlier");
+        let b = comment("b.rs", 5, 5, Some("x"), "two");
+        let a2 = comment("a.rs", 20, 20, Some("y"), "later");
+        let a1 = comment("a.rs", 3, 3, Some("z"), "earlier");
         let out = format_all(&[&b, &a2, &a1]);
-        assert_eq!(out, "a.rs:3\n+z\nearlier\n\na.rs:20\n+y\nlater\n\nb.rs:5\n+x\ntwo");
+        assert_eq!(out, "a.rs:3\nz\nearlier\n\na.rs:20\ny\nlater\n\nb.rs:5\nx\ntwo");
     }
 }

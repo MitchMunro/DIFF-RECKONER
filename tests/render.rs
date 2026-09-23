@@ -80,7 +80,7 @@ fn composing(app: &mut App) {
 
 #[test]
 fn invalid_config_replaces_the_entire_pane_with_its_error() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     app.set_config_error(
         "config /tmp/reviewr/config.toml: invalid value for `theme`; expected a built-in theme name"
             .to_string(),
@@ -96,14 +96,14 @@ fn invalid_config_replaces_the_entire_pane_with_its_error() {
 
 #[test]
 fn the_empty_comment_box_shows_a_placeholder() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     composing(&mut app);
     assert!(render(&app).contains("Leave a comment…"), "an empty box shows the placeholder");
 }
 
 #[test]
 fn the_caret_block_sits_on_the_character_at_the_caret() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     composing(&mut app);
     app.input_push('a');
     app.input_push('b');
@@ -122,7 +122,7 @@ fn the_caret_block_sits_on_the_character_at_the_caret() {
 
 #[test]
 fn backspacing_a_wide_character_leaves_the_terminal_cursor_unpainted() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     composing(&mut app);
     app.input_push('日');
     app.input_push('本');
@@ -146,7 +146,7 @@ fn backspacing_a_wide_character_leaves_the_terminal_cursor_unpainted() {
 
 #[test]
 fn a_height_capped_composer_scrolls_to_keep_the_caret_visible() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     composing(&mut app);
     for _ in 0..599 {
         app.input_push('x');
@@ -251,14 +251,15 @@ fn the_fold_hint_names_the_expand_binding() {
     assert!(!out.contains("→ expand"), "the freed arrow leaves the hint");
 }
 
-fn edited_app() -> App {
+/// `hello.rs` with one edited line. The repo is returned to keep it on disk: a comment
+/// writes into the file itself.
+fn edited_app() -> (Repo, App) {
     let r = Repo::init();
     r.write("hello.rs", "alpha\nbeta\n");
     r.commit_all("init");
     r.write("hello.rs", "alpha\nBETA\n");
-    // The repo is only needed through reload(); rendering reads cached state, so
-    // `r` can drop here and clean up its tempdir.
-    app_on(&r)
+    let app = app_on(&r);
+    (r, app)
 }
 
 #[test]
@@ -329,7 +330,7 @@ fn token_x(buf: &Buffer, token: &str, x0: u16) -> u16 {
 }
 
 #[test]
-fn a_saved_comment_renders_inline_as_a_card() {
+fn a_saved_comment_renders_as_its_tag_line_in_the_diff() {
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\n");
     r.commit_all("init");
@@ -345,8 +346,9 @@ fn a_saved_comment_renders_inline_as_a_card() {
     app.submit_comment(); // box closes, comment saved
 
     let out = render(&app);
-    assert!(out.contains("memoize this"), "the saved comment stays visible inline: {out:?}");
-    assert!(out.contains("comment ·"), "the inline card is titled with the location");
+    let tag = format!("2 // {} memoize this", diff_reckoner::review::TAG);
+    assert!(out.contains(&tag), "the comment is an inserted line of the file:\n{out}");
+    assert!(!out.contains("comment ·"), "no card is spliced beside it:\n{out}");
 }
 
 #[test]
@@ -484,7 +486,7 @@ fn the_diff_cursor_row_is_marked_from_either_pane() {
     // The diff pane's cursor row marks like the file list's: filled when the pane holds
     // focus, bold with no fill when it does not. A hunk step driven from the file list moves this
     // cursor, so it has to be visible from there.
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     app.focus = Focus::Diff;
     app.next_hunk();
     let cursor_y = |app: &App| 4 + app.diff_cursor as u16; // border at y=3, first row at y=4
@@ -509,7 +511,7 @@ fn the_diff_cursor_row_is_marked_from_either_pane() {
 
 #[test]
 fn the_selected_file_row_fills_with_the_shared_selection_color() {
-    let app = edited_app(); // one file, file_cursor = 0, Files focused
+    let (_repo, app) = edited_app(); // one file, file_cursor = 0, Files focused
     let buf = render_buffer(&app);
     // Files pane: right 32% of 140 cols; its border is at y=3, first content row at y=4.
     let files_x0 = 140 - 140 * 32 / 100 + 1;
@@ -520,7 +522,7 @@ fn the_selected_file_row_fills_with_the_shared_selection_color() {
 
 #[test]
 fn a_hidden_navigator_gives_the_read_pane_the_whole_body() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     app.focus = Focus::Diff;
     app.next_hunk();
     let cursor_y = 4 + app.diff_cursor as u16;
@@ -556,7 +558,7 @@ fn a_hidden_navigator_gives_the_read_pane_the_whole_body() {
 
 #[test]
 fn shows_tab_bar_file_list_and_diff() {
-    let app = edited_app();
+    let (_repo, app) = edited_app();
     let out = render(&app);
     assert!(out.contains("Changes"), "tab bar names the view");
     assert!(out.contains("uncommitted"), "current scope shown");
@@ -626,7 +628,7 @@ fn the_footer_offers_the_armed_crossing_in_both_directions() {
 
 #[test]
 fn the_footer_shows_the_action_for_the_context() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     on_changed_line(&mut app);
     let footer = footer_line(&render(&app));
     assert!(footer.contains("c comment"), "a diff line offers comment:\n{footer}");
@@ -642,7 +644,7 @@ fn ends_with_hint(row: &str) -> bool {
 
 #[test]
 fn the_footer_trims_trailing_actions_to_fit_keeping_the_primary_and_the_more_hint() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     on_changed_line(&mut app); // diff focus, content line → c comment · v select … ?
     // Wide: every cursor action fits, and the `?` closes the row.
     let wide = footer_line(&render_at(&app, 120));
@@ -666,7 +668,7 @@ fn the_footer_trims_trailing_actions_to_fit_keeping_the_primary_and_the_more_hin
 
 #[test]
 fn a_narrow_row_keeps_send_and_the_more_hint_by_shedding_the_primary_label() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     on_changed_line(&mut app);
     app.start_comment();
     for ch in "n".chars() {
@@ -683,7 +685,7 @@ fn a_narrow_row_keeps_send_and_the_more_hint_by_shedding_the_primary_label() {
 
 #[test]
 fn the_footer_shows_the_sends_outcome_at_a_pane_width_by_yielding_the_cursor_actions() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     on_changed_line(&mut app);
     app.start_comment();
     app.input_push('n');
@@ -732,7 +734,7 @@ fn the_footer_shows_the_sends_outcome_at_a_pane_width_by_yielding_the_cursor_act
 
 #[test]
 fn the_expansion_aligns_row_one_into_the_labeled_grid() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     on_changed_line(&mut app);
     app.toggle_keys();
     let out = render(&app);
@@ -772,7 +774,7 @@ fn the_expansion_aligns_row_one_into_the_labeled_grid() {
 
 #[test]
 fn the_collapsed_footer_stays_a_flush_action_bar() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     on_changed_line(&mut app); // collapsed: no expansion
     let footer = footer_line(&render(&app));
     assert!(
@@ -784,7 +786,7 @@ fn the_collapsed_footer_stays_a_flush_action_bar() {
 
 #[test]
 fn the_expanded_row_one_never_drops_send_or_the_more_hint_on_a_narrow_pane() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     on_changed_line(&mut app);
     app.start_comment();
     for ch in "n".chars() {
@@ -804,7 +806,7 @@ fn the_expanded_row_one_never_drops_send_or_the_more_hint_on_a_narrow_pane() {
 
 #[test]
 fn the_expansion_caps_so_the_body_keeps_its_rows() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     on_changed_line(&mut app);
     app.toggle_keys();
     // On a short pane the wrapped bands would want more rows than fit, but the footer is capped so
@@ -815,7 +817,7 @@ fn the_expansion_caps_so_the_body_keeps_its_rows() {
 
 #[test]
 fn the_footer_keeps_its_actions_alongside_a_status() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     on_changed_line(&mut app);
     app.status = "comment added".to_string();
     let footer = footer_line(&render(&app));
@@ -830,7 +832,7 @@ fn the_footer_keeps_its_actions_alongside_a_status() {
 /// The editor's failure has to reach the reviewer on the frame it happened, from either pane.
 #[test]
 fn the_footer_shows_an_editor_failure_from_either_pane() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     on_changed_line(&mut app);
     app.status = "editor failed: No such file or directory (os error 2)".to_string();
     let footer = footer_line(&render(&app));
@@ -858,7 +860,7 @@ fn empty_repo_shows_empty_states() {
 
 #[test]
 fn composing_renders_the_inline_multiline_box() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     app.focus = Focus::Diff;
     app.diff_cursor = app.diff.rows.iter().position(|r| r.marker() == '+').unwrap();
     app.start_comment();
@@ -925,7 +927,7 @@ const AREA: Rect = Rect { x: 0, y: 0, width: 140, height: 40 };
 
 #[test]
 fn header_clicks_map_to_the_scope_chip() {
-    let app = edited_app(); // scope uncommitted, no comments
+    let (_repo, app) = edited_app(); // scope uncommitted, no comments
     // Scan the header row instead of hardcoding columns, so the test survives changes
     // to the label text.
     let scope: Vec<u16> = (0..AREA.width)
@@ -949,7 +951,7 @@ fn header_clicks_map_to_the_scope_chip() {
 
 #[test]
 fn file_and_diff_clicks_map_to_row_indices() {
-    let app = edited_app();
+    let (_repo, app) = edited_app();
     // Right pane: the first file row maps to index 0; clicking past the list misses.
     assert_eq!(ui::hit_file(AREA, &app, 120, 4, app.file_rows.len(), 0), Some(0));
     assert_eq!(ui::hit_file(AREA, &app, 120, 11, app.file_rows.len(), 0), None);
@@ -976,7 +978,7 @@ fn file_and_diff_clicks_map_to_row_indices() {
 
 #[test]
 fn navigator_layout_rects_cover_every_position_and_tiny_axis() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     let body = ui::body_rect(AREA, &app);
 
     for position in [
@@ -1092,32 +1094,28 @@ fn a_binary_file_shows_the_no_line_comments_message() {
 }
 
 #[test]
-fn the_comments_list_flags_a_stale_comment() {
+fn the_comments_list_leads_a_deleted_line_comment_with_its_marker() {
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\n");
     r.commit_all("init");
     r.write("a.rs", "alpha\nBETA\n");
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.rows.iter().position(|r| r.marker() == '+').unwrap();
+    app.diff_cursor = app.diff.rows.iter().position(|r| r.marker() == '-').unwrap();
     app.start_comment();
     for ch in "look here".chars() {
         app.input_push(ch);
     }
     app.submit_comment();
-
-    // a.rs reverts to its committed state → leaves the changeset → the comment is stale.
-    r.write("a.rs", "alpha\nbeta\n");
-    app.reload().unwrap();
     app.open_list();
 
     let out = render(&app);
-    assert!(out.contains("(stale)"), "stale comment flagged in the list:\n{out}");
+    assert!(out.contains("a.rs:2  [DELETED: (beta)] look here"), "the list row:\n{out}");
 }
 
 #[test]
 fn open_list_renders_the_comments_overlay() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     app.focus = Focus::Diff;
     app.diff_cursor = app.diff.rows.iter().position(|r| r.marker() == '+').unwrap();
     app.start_comment();
@@ -1179,7 +1177,7 @@ fn all_files_empty_pane_reads_select_a_file() {
 
 #[test]
 fn renders_a_light_theme_without_panic() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     app.set_cli_theme(Some("catppuccin-latte".to_string()));
     // Driving the full render path with a derived light palette must not panic, and a Latte
     // color (the focused pane's blue border) reaches the painted buffer.
@@ -1194,7 +1192,7 @@ fn renders_a_light_theme_without_panic() {
 #[test]
 fn every_cell_paints_on_the_theme_not_the_terminal_default() {
     use ratatui::style::Color;
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     app.set_cli_theme(Some("solarized-light".to_string()));
     // The page alone, and under a popup whose `Clear` resets its cells.
     for open in [false, true] {
@@ -1210,7 +1208,7 @@ fn every_cell_paints_on_the_theme_not_the_terminal_default() {
 
 #[test]
 fn the_theme_picker_lists_both_sides_and_checks_each_saved_theme() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     let closed = render_buffer(&app);
     app.open_theme_picker();
     let out = render(&app);
@@ -1241,7 +1239,7 @@ fn the_theme_picker_lists_both_sides_and_checks_each_saved_theme() {
 
 #[test]
 fn highlighting_follow_terminal_shows_the_note_above_the_box() {
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     app.open_theme_picker();
     app.theme_picker_move(-99);
     let out = render(&app);
@@ -1258,7 +1256,7 @@ fn rebound_app(keybindings: &str) -> App {
     std::fs::write(dir.path().join("config.toml"), format!("[keybindings]\n{keybindings}"))
         .unwrap();
     let config = diff_reckoner::config::plugin_config_in(dir.path()).unwrap();
-    let mut app = edited_app();
+    let (_repo, mut app) = edited_app();
     app.set_plugin_config(config);
     app.focus = Focus::Diff;
     app

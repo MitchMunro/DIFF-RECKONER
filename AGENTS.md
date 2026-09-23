@@ -23,13 +23,16 @@ behaviour.
 
 Inherited from reviewr and still load-bearing. Cite them by name:
 
-- **No writes (today)**: the reviewer does not mutate the worktree, index, or branches. Its
-  only git writes are private refs under `refs/worktree/reviewr/`. The design doc's in-file
-  comment model will change this deliberately — nothing else should.
-- **Comments survive**: comments are never lost to a refresh or an agent's edits.
+- **Tag lines only**: the reviewer's one worktree write is a comment's own tag lines, through
+  `src/review.rs` — inserted, rewritten, or removed, a delete restoring the file byte for byte.
+  It never touches the index or branches; its only git writes are private refs under
+  `refs/worktree/diff-reckoner/`.
+- **Comments survive**: the file is the only store, so a refresh re-scans rather than drops.
+  Every write re-reads the file first and refuses when it no longer holds what the reviewer
+  saw, so it never lands on lines an agent has moved.
 - **Continuity**: place state (cursor, scroll, tab, scope, folds, selection, layout) moves
   only under the user's own input. World events (polls, refreshes) may only *reconcile* it:
-  match by identity first (path, comment author+anchor — never row index), fall back to the
+  match by identity first (path, comment text+anchor — never row index), fall back to the
   nearest surviving target, clamp last. Derived state on screen may be stale, never wrong.
 
 ## Architecture
@@ -52,11 +55,13 @@ matches.
 - `src/diff.rs` — `FileDiff` build (syntect highlight both sides, similar-line pairing, word
   emphasis, folds) and `DiffCache`, keyed by path and gated by content hash.
 - `src/ui.rs` — all rendering.
-- `src/model.rs` — `CommentStore` (in-memory today; the design doc replaces this with the
-  file itself), comment anchoring.
+- `src/review.rs` — in-file comments: the comment-syntax table, the tag-line parser, the scan,
+  and the guarded file edits.
+- `src/model.rs` — `Comment` and `CommentStore`, the last scan's comments (derived, never
+  authoritative).
 - `src/editor.rs` — the editor command: a name-keyed dialect table and the `editor` key's
   `{file}`/`{line}` template. `run_editor` in `lib.rs` owns the spawn.
-- `src/export.rs` — comment export: format all, copy to the clipboard.
+- `src/export.rs` — comment export: format all, copy to the clipboard. Never consumes.
 - `src/config.rs` — the config file boundary, inherited from reviewr's plugin config. The
   design doc puts a config file out of scope; this is leftover surface, not a commitment.
 

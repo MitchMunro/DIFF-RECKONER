@@ -27,7 +27,7 @@ use crate::file_list::{Annotation, RowKind};
 use crate::git;
 
 use crate::keymap::Keymap;
-use crate::model::{ChangeKind, Comment};
+use crate::model::ChangeKind;
 use crate::theme::Palette;
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -338,26 +338,7 @@ pub fn diff_viewport_height(area: Rect, app: &App) -> usize {
 pub fn diff_row_heights(app: &App, area: Rect) -> Vec<usize> {
     let width = inner_rect(panes(area, app).diff).width as usize;
     let gutter_w = gutter_for(&app.diff);
-    let p = app.palette();
-    // A row's display height is its wrapped code lines plus any inline comment cards under
-    // it (excluding a card whose comment is being edited), so scroll-clamping and hit-testing
-    // match what the renderer paints. The same lean anchor list the layout walk uses.
-    let cards = app.card_rows();
-    let editing = editing_comment(app);
-    app.visible
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let base = row_height(r, gutter_w, width, app.wrap);
-            let card: usize = cards
-                .iter()
-                .filter(|&&(row, ci)| row == i && Some(ci) != editing)
-                .filter_map(|&(_, ci)| app.store.get(ci))
-                .map(|c| comment_card_lines(c, width, p).len())
-                .sum();
-            base + card
-        })
-        .collect()
+    app.visible.iter().map(|r| row_height(r, gutter_w, width, app.wrap)).collect()
 }
 
 /// One display line of the read pane — what `render_diff_view` walks, paints, and records
@@ -367,8 +348,6 @@ pub fn diff_row_heights(app: &App, area: Rect) -> Vec<usize> {
 pub enum Slot {
     /// A code display line: the logical row and its wrap-segment index.
     Code { row: usize, seg: usize },
-    /// A spliced comment card's display line: the store index and the line within the card.
-    Card { comment: usize, line: usize },
     /// A composer display line, inert for selection.
     Composer,
 }
@@ -403,26 +382,11 @@ fn read_layout(app: &App, inner: Rect) -> Vec<Slot> {
     let height = inner.height as usize;
     let width = inner.width as usize;
     let gutter_w = gutter_for(&app.diff);
-    let p = app.palette();
-    let cards = app.card_rows();
-    let editing = editing_comment(app);
     let rows = app.visible.len();
-    // A row's slots: its wrapped code lines, then its visible cards' lines — the same order
-    // `render_diff_view`'s `row_lines` paints them.
+    // A row's slots: its wrapped code lines, in the order `render_diff_view` paints them.
     let row_slots = |i: usize| -> Vec<Slot> {
         let segs = row_height(&app.visible[i], gutter_w, width, app.wrap);
-        let mut out: Vec<Slot> = (0..segs).map(|seg| Slot::Code { row: i, seg }).collect();
-        for &(_, ci) in cards.iter().filter(|&&(row, _)| row == i) {
-            if Some(ci) != editing
-                && let Some(c) = app.store.get(ci)
-            {
-                out.extend(
-                    (0..comment_card_lines(c, width, p).len())
-                        .map(|line| Slot::Card { comment: ci, line }),
-                );
-            }
-        }
-        out
+        (0..segs).map(|seg| Slot::Code { row: i, seg }).collect()
     };
 
     if !app.composing() {
@@ -535,7 +499,7 @@ pub fn read_content_rect(area: Rect, app: &App) -> Rect {
 }
 
 /// The selection point under `(col, row)` in the read pane, `None` off the pane, on a fold,
-/// a card, or the composer. `chr` is a source-char index into the row's text.
+/// or the composer. `chr` is a source-char index into the row's text.
 #[must_use]
 pub fn read_point_at(area: Rect, app: &App, col: u16, row: u16) -> Option<crate::selection::Point> {
     let pane = read_pane(area, app);
@@ -713,34 +677,6 @@ fn render_text_selection(frame: &mut Frame, app: &App, area: Rect) {
                 );
             }
         }
-        Surface::Card { comment } => {
-            let pane = read_pane(area, app);
-            let slots = app.painted_slots();
-            let Some(c) = app.store.get(comment) else { return };
-            let texts = card_body_lines(c, pane.inner.width as usize);
-            for (off, slot) in slots.iter().enumerate() {
-                let Slot::Card { comment: ci, line } = *slot else { continue };
-                if ci != comment || line == 0 {
-                    continue; // the borders are chrome, never selected
-                }
-                let body = line - 1;
-                if body >= texts.len() || body < lo.row || body > hi.row {
-                    continue;
-                }
-                let from = if body == lo.row { lo.chr } else { 0 };
-                let to = if body == hi.row { Some(hi.chr) } else { None };
-                paint_text_span(
-                    frame,
-                    pane.inner.x as usize + CARD_TEXT_X,
-                    pane.inner.y + off as u16,
-                    (pane.inner.x + pane.inner.width) as usize,
-                    &texts[body],
-                    from,
-                    to,
-                    style,
-                );
-            }
-        }
     }
 }
 
@@ -795,82 +731,6 @@ fn char_at_col(text: &str, col: usize) -> usize {
         }
     }
     last
-}
-
-/// A spliced comment card's left indent, in columns (`comment_card_lines`).
-const CARD_INDENT: usize = 2;
-
-/// Where a card's body text starts, from the pane's left edge: the indent plus `│ `.
-const CARD_TEXT_X: usize = CARD_INDENT + 2;
-
-/// A comment card's selectable body lines: the wrapped text between its borders — the card's
-/// text, never its box glyphs.
-pub(crate) fn card_body_lines(c: &Comment, width: usize) -> Vec<String> {
-    let box_w = width.saturating_sub(CARD_INDENT).max(10);
-    let text_w = box_w.saturating_sub(4).max(1); // inside "│ " … " │"
-    c.text.split('\n').flat_map(|l| wrap_text(l, text_w)).collect()
-}
-
-/// The card selection point under `(col, row)`: the comment plus the (body line, char) —
-/// a drag that starts on a card selects that card's text (`TS-ONE-SURFACE`).
-#[must_use]
-pub fn card_point_at(
-    area: Rect,
-    app: &App,
-    col: u16,
-    row: u16,
-) -> Option<(usize, crate::selection::Point)> {
-    let pane = read_pane(area, app);
-    if !contains(pane.inner, col, row) {
-        return None;
-    }
-    let slots = app.painted_slots();
-    let Slot::Card { comment, line } = *slots.get((row - pane.inner.y) as usize)? else {
-        return None;
-    };
-    let point = card_point(app, &pane, comment, line, col)?;
-    Some((comment, point))
-}
-
-/// `card_point_at` for the drag's moving end: clamps `(col, row)` into the painted lines of
-/// the card it started on.
-#[must_use]
-pub fn card_point_clamped(
-    area: Rect,
-    app: &App,
-    comment: usize,
-    col: u16,
-    row: u16,
-) -> Option<crate::selection::Point> {
-    let pane = read_pane(area, app);
-    if pane.inner.height == 0 {
-        return None;
-    }
-    let slots = app.painted_slots();
-    let mine = |s: &Slot| matches!(s, Slot::Card { comment: c, .. } if *c == comment);
-    let first = slots.iter().position(mine)?;
-    let last = slots.iter().rposition(mine)?;
-    let at = ((row.max(pane.inner.y) - pane.inner.y) as usize).clamp(first, last);
-    let Slot::Card { line, .. } = slots[at] else { return None };
-    card_point(app, &pane, comment, line, col)
-}
-
-/// The (body line, char) a card's painted line `line` maps to at column `col`; the border
-/// lines snap to the nearest body line.
-fn card_point(
-    app: &App,
-    pane: &ReadPane,
-    comment: usize,
-    line: usize,
-    col: u16,
-) -> Option<crate::selection::Point> {
-    let texts = card_body_lines(app.store.get(comment)?, pane.inner.width as usize);
-    if texts.is_empty() {
-        return None;
-    }
-    let body = line.saturating_sub(1).min(texts.len() - 1);
-    let text_col = (col as usize).saturating_sub(pane.inner.x as usize + CARD_TEXT_X);
-    Some(crate::selection::Point { row: body, chr: char_at_col(&texts[body], text_col) })
 }
 
 /// A painted line's selectable text: trailing pad columns are chrome, and a full-width rule
@@ -954,15 +814,6 @@ pub fn painted_point(
 /// The painted surface's line texts, for extraction at a drag's release.
 pub(crate) fn painted_texts(app: &App, area: Rect) -> Vec<String> {
     painted_sel(app, area).map(|s| s.texts).unwrap_or_default()
-}
-
-/// The store index of the comment currently being edited, whose inline card is hidden in
-/// favor of its edit box; `None` when not editing.
-fn editing_comment(app: &App) -> Option<usize> {
-    match app.mode {
-        Mode::Composing { editing } => editing,
-        _ => None,
-    }
 }
 
 /// Rows the inline comment box occupies at the diff pane's `width`: the wrapped body height
@@ -1177,16 +1028,6 @@ pub fn caret_vertical(input: &str, caret: usize, content_w: usize, down: bool) -
     let target = if down { (row + 1).min(rows.len() - 1) } else { row.saturating_sub(1) };
     let (start, text) = &rows[target];
     start + col.min(text.chars().count())
-}
-
-/// Word-wrap a plain string to `width` columns, reusing the diff's [`wrap_segments`] so the
-/// break rule (last space, hard-break an over-wide word, width-aware) is identical.
-fn wrap_text(s: &str, width: usize) -> Vec<String> {
-    let cells: Vec<Cell> = s.chars().map(plain_cell).collect();
-    wrap_segments(&cells, width, ContinuationSpaces::Trim)
-        .into_iter()
-        .map(|(a, b)| cells[a..b].iter().map(|c| c.ch).collect())
-        .collect()
 }
 
 /// A clickable region in the header.
@@ -1704,46 +1545,6 @@ fn elide_head(name: &str, max: usize) -> String {
     format!("…{tail}")
 }
 
-/// A saved comment as inline display lines: a quiet box titled with the comment's location
-/// (in the comment-yellow accent) holding its wrapped text. Spliced read-only under the
-/// commented line so a submitted comment stays visible while reviewing.
-fn comment_card_lines(c: &Comment, width: usize, p: &Palette) -> Vec<Line<'static>> {
-    const INDENT: usize = CARD_INDENT;
-    let box_w = width.saturating_sub(INDENT).max(10);
-    let text_w = box_w.saturating_sub(4).max(1); // inside "│ " … " │"
-    let border = Style::default().fg(p.dim2);
-    let title = Style::default().fg(p.orange).add_modifier(Modifier::BOLD);
-    let body_style = Style::default().fg(p.text);
-    let pad = || Span::raw(" ".repeat(INDENT));
-
-    let label = truncate_width(&format!(" comment · {} ", c.location()), box_w.saturating_sub(3));
-    let fill = box_w.saturating_sub(3 + label.width());
-    let mut lines = vec![Line::from(vec![
-        pad(),
-        Span::styled("╭─", border),
-        Span::styled(label, title),
-        Span::styled(format!("{}╮", "─".repeat(fill)), border),
-    ])];
-
-    // The body rows come from the selection model's own wrap (`card_body_lines`), so the
-    // painted text and the highlight/copy mapping cannot diverge (TS-ONE-SURFACE).
-    for piece in card_body_lines(c, width) {
-        let gap = " ".repeat(text_w.saturating_sub(piece.width()));
-        lines.push(Line::from(vec![
-            pad(),
-            Span::styled("│ ", border),
-            Span::styled(piece, body_style),
-            Span::styled(format!("{gap} │"), border),
-        ]));
-    }
-
-    lines.push(Line::from(vec![
-        pad(),
-        Span::styled(format!("╰{}╯", "─".repeat(box_w.saturating_sub(2))), border),
-    ]));
-    lines
-}
-
 /// Truncate `s` to `max` display columns, marking a cut with a trailing `…`. Zero columns
 /// fit nothing, not a bare `…`.
 fn truncate_width(s: &str, max: usize) -> String {
@@ -1875,12 +1676,10 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
         }
     });
 
-    // A slot's painted line, caching the current row's (or card's) built lines — a walk
-    // visits each in a contiguous run. The cursor/selection apply to the code line's
-    // display rows, not the cards; the cursor row is always marked, dimmed while the pane
-    // is unfocused, exactly as the file list marks its own.
+    // A slot's painted line, caching the current row's built lines — a walk visits each in
+    // a contiguous run. The cursor row is always marked, dimmed while the pane is unfocused,
+    // exactly as the file list marks its own.
     let mut row_cache: Option<(usize, Vec<Line>)> = None;
-    let mut card_cache: Option<(usize, Vec<Line>)> = None;
     let mut line_for = |slot: &Slot| -> Line<'static> {
         match *slot {
             Slot::Code { row, seg } => {
@@ -1894,17 +1693,6 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
                     row_cache = Some((row, render_row(&app.visible[row], layout, state)));
                 }
                 row_cache.as_ref().and_then(|(_, l)| l.get(seg).cloned()).unwrap_or_default()
-            }
-            Slot::Card { comment, line } => {
-                if card_cache.as_ref().is_none_or(|(c, _)| *c != comment) {
-                    let lines = app
-                        .store
-                        .get(comment)
-                        .map(|c| comment_card_lines(c, width, p))
-                        .unwrap_or_default();
-                    card_cache = Some((comment, lines));
-                }
-                card_cache.as_ref().and_then(|(_, l)| l.get(line).cloned()).unwrap_or_default()
             }
             Slot::Composer => Line::default(),
         }
@@ -2892,12 +2680,8 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
                 format!(" {}", c.location()),
                 Style::default().fg(p.purple).add_modifier(Modifier::BOLD),
             );
-            let mut spans = vec![loc, Span::styled(format!("  {}", c.text), text_style(p))];
-            // A comment whose anchor may have moved (file left the changeset, or a content
-            // comment's file was deleted) is flagged but kept.
-            if app.is_stale(c) {
-                spans.push(Span::styled("  (stale)", Style::default().fg(p.red)));
-            }
+            let text = c.display_text().replace('\n', " ");
+            let spans = vec![loc, Span::styled(format!("  {text}"), text_style(p))];
             // The list overlay is the active modal, so its row reads at full brightness.
             selectable_row(p, spans, width, RowCursor::at(i == app.list_cursor, true))
         })
@@ -3248,8 +3032,7 @@ const COMMIT_SHA_W: usize = 7;
 const COMMIT_AGE_W: usize = 3;
 
 /// One picker row's text parts, the pick row painted as the header paints the pick
-/// The trail is the row's dim facts, `·`-joined: `✎ N` for comments
-/// held on the commit, `merge`, and one ref.
+/// The trail is the row's dim facts, `·`-joined: `merge` and one ref.
 struct CommitRowParts {
     sha: String,
     subject: String,
@@ -3258,15 +3041,8 @@ struct CommitRowParts {
     age: String,
 }
 
-/// Every visible row's parts, built once per paint: the comment counts come from one pass
-/// over the store, and the author column's width from one pass over the rows.
+/// Every visible row's parts, built once per paint.
 fn commit_row_parts(app: &App, cp: &crate::app::CommitPicker) -> Vec<CommitRowParts> {
-    let mut comments: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for c in app.store.iter() {
-        if let crate::model::Rev::Commit(pick) = &c.rev {
-            *comments.entry(pick.newest.as_str()).or_default() += 1;
-        }
-    }
     let now = now_unix();
     (0..cp.len())
         .map(|i| {
@@ -3282,9 +3058,6 @@ fn commit_row_parts(app: &App, cp: &crate::app::CommitPicker) -> Vec<CommitRowPa
             }
             let row = cp.list_row(i).expect("a visible index names a row");
             let mut trail: Vec<String> = Vec::new();
-            if let Some(n) = comments.get(row.sha.as_str()) {
-                trail.push(format!("✎ {n}"));
-            }
             if row.merge {
                 trail.push("merge".to_string());
             }

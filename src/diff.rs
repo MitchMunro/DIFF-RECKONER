@@ -80,6 +80,14 @@ impl Row {
         !matches!(self, Row::Fold { .. })
     }
 
+    /// The content rows this row stands for: a fold's hidden lines, else the row itself.
+    pub fn lines(&self) -> &[Row] {
+        match self {
+            Row::Fold { lines } => lines,
+            _ => std::slice::from_ref(self),
+        }
+    }
+
     /// The hidden line count of a fold, else 0.
     pub fn hidden(&self) -> usize {
         match self {

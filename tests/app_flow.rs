@@ -1,5 +1,5 @@
 //! End-to-end tests of the review loop: `App` driven against real repos, with a
-//! fake export target so consume-on-success is checked without a live agent.
+//! fake export target so an export can be checked without a clipboard.
 
 mod common;
 
@@ -11,7 +11,7 @@ use diff_reckoner::app::{App, Band, Focus, FooterAction, Mode};
 use diff_reckoner::config::NavigatorPosition;
 use diff_reckoner::export::ExportTarget;
 use diff_reckoner::keymap::{Action, Key, KeyCode as BindingCode, Keymap};
-use diff_reckoner::model::{Scope, Side};
+use diff_reckoner::model::Scope;
 use diff_reckoner::{handle_key, handle_mouse};
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -679,6 +679,24 @@ fn comment_on(app: &mut App, marker: char, text: &str) {
     app.submit_comment();
 }
 
+/// Comment on the first visible row with `marker` whose text contains `needle`.
+fn comment_on_line(app: &mut App, marker: char, needle: &str, text: &str) {
+    app.focus = Focus::Diff;
+    app.diff_cursor = app
+        .visible
+        .iter()
+        .position(|r| r.marker() == marker && r.text().contains(needle))
+        .expect("a row with that marker and text");
+    app.start_comment();
+    typed(app, text);
+    app.submit_comment();
+}
+
+/// A comment's tag line as `review.rs` writes it into a `//` file.
+fn tag_line(text: &str) -> String {
+    format!("// {} {text}", diff_reckoner::review::TAG)
+}
+
 /// An app sitting in the comment composer on the first changed line, caret at 0.
 fn composing_app() -> App {
     let r = edited_repo();
@@ -981,8 +999,8 @@ fn the_expansion_toggles_from_normal_and_survives_a_poll() {
 
 #[test]
 fn the_expansion_is_inert_in_the_comments_list() {
-    let mut app = composing_app();
-    app.cancel_comment();
+    let r = edited_repo();
+    let mut app = app_on(&r);
     comment_on(&mut app, '+', "note");
     let keymap = Keymap::default();
     app.open_list();
@@ -1208,14 +1226,15 @@ fn a_comment_through_a_fold_anchors_to_gits_line_and_survives_a_poll() {
     }
     app.submit_comment();
     let c = app.store.iter().next().unwrap();
-    assert_eq!((c.side, c.start), (Side::New, 21));
+    assert_eq!(c.start, 21, "written above new-side line 21");
+    assert!(c.anchor.as_deref().is_some_and(|a| a.contains("LINE 20")), "{c:?}");
 
-    // A fold expand plus a poll keeps the comment.
+    // A fold expand plus a poll keeps the comment, painted as its own tag line.
     app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
     expand_fold(&mut app);
     app.reload().unwrap();
     assert_eq!(app.store.len(), 1, "the comment survives a fold expand and a poll");
-    assert!(app.commented_lines().iter().any(|&i| app.visible[i].text().contains("LINE 20")));
+    assert!(app.commented_lines().iter().any(|&i| app.visible[i].text().ends_with("here")));
 }
 
 #[test]
@@ -1240,35 +1259,59 @@ fn comment_anchors_to_gits_real_line_numbers() {
     }
     app.submit_comment();
 
+    // The removed line's comment went above `BETA` (line 2), pushing `epsilon`'s down one.
     let appended = app.store.iter().find(|c| c.text == "appended").unwrap();
-    assert_eq!((appended.side, appended.start, appended.end), (Side::New, 5, 5));
+    assert_eq!((appended.start, appended.end), (6, 6));
+    assert_eq!(appended.anchor.as_deref(), Some("epsilon"));
     let removed = app.store.iter().find(|c| c.text == "removed").unwrap();
-    assert_eq!((removed.side, removed.start, removed.end), (Side::Old, 2, 2));
+    assert_eq!((removed.start, removed.end), (2, 2));
+    assert_eq!(removed.anchor.as_deref(), Some("BETA"), "the nearest surviving line");
+    assert_eq!(removed.deleted.as_deref(), Some("beta"));
 }
 
 #[test]
-fn comments_on_added_and_removed_lines_capture_the_snippet() {
+fn comments_on_added_and_removed_lines_are_written_into_the_file() {
     let r = edited_repo();
     let mut app = app_on(&r);
     assert_eq!(app.entries.len(), 1);
 
-    comment_on(&mut app, '+', "this addition needs a test");
-    comment_on(&mut app, '-', "why was this dropped?");
+    comment_on_line(&mut app, '+', "epsilon", "this addition needs a test");
+    comment_on_line(&mut app, '-', "beta", "why was this dropped?");
     assert_eq!(app.store.len(), 2);
+    let deleted = tag_line("[DELETED: (beta)] why was this dropped?");
+    assert_eq!(
+        r.read("a.rs"),
+        format!(
+            "alpha\n{deleted}\nBETA\ngamma\ndelta\n{}\nepsilon\n",
+            tag_line("this addition needs a test")
+        ),
+        "each comment is a tag line directly above the line it annotates"
+    );
+    // The tag lines are ordinary insertions in the reloaded diff.
+    let inserted = app.visible.iter().filter(|row| row.marker() == '+').count();
+    assert_eq!(inserted, 4, "BETA, epsilon, and one tag line each");
+}
 
-    let removed = app
-        .store
-        .iter()
-        .find(|c| c.location().ends_with("(removed)"))
-        .expect("a removed-side comment");
-    assert!(removed.lines.starts_with('-'), "snippet keeps the diff marker: {:?}", removed.lines);
-
-    let added = app
-        .store
-        .iter()
-        .find(|c| !c.location().ends_with("(removed)"))
-        .expect("a new-side comment");
-    assert!(added.lines.starts_with('+'));
+#[test]
+fn a_comment_next_to_an_existing_one_edits_it_instead_of_merging() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    comment_on_line(&mut app, '+', "BETA", "first");
+    // `beta`'s nearest surviving line is `BETA`, which already has a comment.
+    app.focus = Focus::Diff;
+    app.diff_cursor = app.visible.iter().position(|row| row.marker() == '-').unwrap();
+    app.start_comment();
+    assert!(
+        matches!(&app.mode, Mode::Composing { editing: Some(c) } if c.text == "first"),
+        "the existing comment opens: {:?}",
+        app.mode
+    );
+    assert_eq!(app.input, "first");
+    // `c` on the comment's own line opens it too.
+    app.cancel_comment();
+    app.diff_cursor = app.commented_lines().into_iter().next().unwrap();
+    app.start_comment();
+    assert!(matches!(&app.mode, Mode::Composing { editing: Some(_) }));
 }
 
 #[test]
@@ -1309,41 +1352,30 @@ fn a_refresh_while_composing_freezes_input_and_diff() {
 }
 
 #[test]
-fn a_failed_export_keeps_comments_and_success_consumes_them() {
+fn an_export_never_consumes_comments() {
     let r = edited_repo();
     let mut app = app_on(&r);
-    comment_on(&mut app, '+', "one");
-    comment_on(&mut app, '-', "two");
+    comment_on_line(&mut app, '+', "epsilon", "one");
+    comment_on_line(&mut app, '-', "beta", "two");
     assert_eq!(app.store.len(), 2);
 
     app.export(&FakeTarget::failing());
     assert_eq!(app.store.len(), 2, "a failed export leaves every comment in place");
+    assert_eq!(app.status, "fake not found");
 
     let target = FakeTarget::ok();
+    let written = r.read("a.rs");
     app.export(&target);
-    assert!(app.store.is_empty(), "a successful export consumes the comments");
+    assert_eq!(app.store.len(), 2, "a successful export keeps them too");
+    assert_eq!(r.read("a.rs"), written, "and leaves the file alone");
     assert_eq!(app.status, "exported 2 comments", "the target owns the success confirmation");
 
     // The sent text is the real export block format, end to end through App::export.
     let sent = target.last();
-    assert!(sent.contains("one") && sent.contains("two"), "both comment texts present: {sent:?}");
-    assert!(sent.lines().next().is_some_and(|l| l.starts_with("a.rs:")), "leads with a location");
-    assert!(sent.contains("\n\n"), "blocks separated by a blank line: {sent:?}");
-    assert!(
-        sent.lines().any(|l| l.starts_with('+') || l.starts_with('-')),
-        "each block carries its diff snippet: {sent:?}"
+    assert_eq!(
+        sent, "a.rs:2\nBETA\n[DELETED: (beta)] two\n\na.rs:6\nepsilon\none",
+        "location, the annotated line, then the text; blocks split by a blank line"
     );
-}
-
-#[test]
-fn send_consumes_the_whole_set() {
-    let r = edited_repo();
-    let mut app = app_on(&r);
-    comment_on(&mut app, '+', "first");
-    comment_on(&mut app, '-', "second");
-
-    app.export(&FakeTarget::ok());
-    assert!(app.store.is_empty(), "send takes every comment, not just one");
 }
 
 #[test]
@@ -1414,6 +1446,7 @@ fn a_comment_can_be_written_across_multiple_lines() {
 
     let c = app.store.iter().next().unwrap();
     assert_eq!(c.text, "first line\nsecond line", "the body keeps its line break");
+    assert_eq!((c.start, c.end), (2, 3), "one tag line per line of text");
 
     let target = FakeTarget::ok();
     app.export(&target);
@@ -1811,22 +1844,78 @@ fn the_comment_box_grows_as_a_long_line_wraps() {
 fn a_comment_can_be_edited_then_deleted() {
     let r = edited_repo();
     let mut app = app_on(&r);
+    let before = r.read("a.rs");
     comment_on(&mut app, '+', "original");
-    let snippet_before = app.store.get(0).unwrap().lines.clone();
+    let anchor_before = app.store.get(0).unwrap().anchor.clone();
 
     app.open_list();
     app.start_edit();
     app.input.clear();
-    for ch in "rewritten".chars() {
+    for ch in "rewritten\nover two lines".chars() {
         app.input_push(ch);
     }
     app.submit_comment();
-    assert_eq!(app.store.get(0).unwrap().text, "rewritten");
-    assert_eq!(app.store.get(0).unwrap().lines, snippet_before, "edit changes only the text");
+    assert_eq!(app.store.get(0).unwrap().text, "rewritten\nover two lines");
+    assert_eq!(app.store.get(0).unwrap().anchor, anchor_before, "edit changes only the text");
+    assert_eq!(
+        r.read("a.rs"),
+        format!("alpha\n{}\n{}\nBETA\n", tag_line("rewritten"), tag_line("over two lines"))
+            + "gamma\ndelta\nepsilon\n",
+        "the edit rewrites the tag lines in place"
+    );
 
     app.open_list();
     app.delete_comment();
     assert!(app.store.is_empty());
+    assert_eq!(r.read("a.rs"), before, "deleting restores the file exactly");
+}
+
+#[test]
+fn a_comment_an_agent_strips_leaves_the_list_on_the_next_poll() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    let before = r.read("a.rs");
+    comment_on(&mut app, '+', "address me");
+    assert_eq!(app.store.len(), 1);
+
+    r.write("a.rs", &before); // the agent removes the tag line
+    app.reload().unwrap();
+    assert!(app.store.is_empty(), "the file is the only store");
+}
+
+#[test]
+fn an_edit_saves_even_after_an_agent_moved_the_comment() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    comment_on(&mut app, '+', "original");
+    app.open_list();
+    app.start_edit();
+
+    // While the box is open, an agent adds a line above the comment.
+    let moved = format!("zero\n{}", r.read("a.rs"));
+    r.write("a.rs", &moved);
+    app.input.clear();
+    typed(&mut app, "rewritten");
+    app.submit_comment();
+    assert_eq!(app.status, "comment updated");
+    assert_eq!(r.read("a.rs"), moved.replace("original", "rewritten"));
+}
+
+#[test]
+fn a_new_comment_on_a_line_that_changed_on_disk_is_refused_with_the_draft_kept() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = row_with(&app, '+');
+    app.start_comment();
+    typed(&mut app, "draft");
+
+    r.write("a.rs", "alpha\nchanged\ngamma\n");
+    app.submit_comment();
+    assert_eq!(app.status, "file changed on disk; try again");
+    assert!(app.composing(), "the box stays open");
+    assert_eq!(app.input, "draft", "with the draft intact");
+    assert_eq!(r.read("a.rs"), "alpha\nchanged\ngamma\n", "nothing was written");
 }
 
 #[test]
@@ -1899,42 +1988,37 @@ fn editing_from_the_list_navigates_to_the_comments_file() {
 }
 
 #[test]
-fn editing_a_range_comment_opens_the_box_at_the_ranges_last_row() {
+fn editing_a_multi_line_comment_opens_the_box_under_its_last_line() {
     let r = selection_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
     app.diff_cursor = 0;
     let keymap = Keymap::default();
-    press(&mut app, &keymap, KeyCode::Char('v'));
-    press(&mut app, &keymap, KeyCode::Char('j'));
-    press(&mut app, &keymap, KeyCode::Char('j'));
     press(&mut app, &keymap, KeyCode::Char('c'));
-    for ch in "range note".chars() {
-        app.input_push(ch);
-    }
+    typed(&mut app, "two\nlines");
     app.submit_comment();
 
-    // The card splices under the range's last row (`card_rows`); `e` reopens the box in
-    // the card's place, never jumping to the range's first line.
+    // `e` on the comment's first line reopens the box right under its last one.
     app.diff_cursor = 0;
     app.start_edit();
     assert!(app.composing());
-    assert_eq!(app.diff_cursor, 2, "the edit box opens at the range's last row");
+    assert_eq!(app.diff_cursor, 1, "the edit box opens at the comment's last line");
 }
 
 #[test]
-fn a_comment_on_a_reverted_file_is_flagged_stale() {
+fn a_comment_keeps_a_reverted_file_in_the_changeset() {
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "note");
 
-    r.write("a.rs", "alpha\nbeta\ngamma\ndelta\n"); // back to committed state
+    // Back to the committed content, plus the comment: its tag line is the one change.
+    let reverted = format!("alpha\n{}\nbeta\ngamma\ndelta\n", tag_line("note"));
+    r.write("a.rs", &reverted);
     app.reload().unwrap();
 
-    assert!(app.entries.iter().all(|f| f.path != "a.rs"), "file left the changeset");
+    assert!(app.entries.iter().any(|f| f.path == "a.rs"), "a comment is an ordinary change");
+    assert_eq!(app.changed_totals(), (1, 0));
     assert_eq!(app.store.len(), 1, "the comment still exists");
-    let c = app.store.get(0).unwrap();
-    assert!(app.is_stale(c), "a diff comment whose file left the changeset is stale");
 }
 
 #[test]
@@ -1989,7 +2073,7 @@ fn changed_totals_follow_the_scope_across_every_change_kind() {
 }
 
 #[test]
-fn a_multi_line_range_comment_spans_lines_and_keeps_the_whole_snippet() {
+fn a_range_comment_goes_above_the_ranges_first_surviving_line() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
@@ -2009,20 +2093,16 @@ fn a_multi_line_range_comment_spans_lines_and_keeps_the_whole_snippet() {
     }
     app.submit_comment();
 
+    // The range opens on the removed `beta`; its first surviving line is `BETA`.
     assert_eq!(app.store.len(), 1);
     let c = app.store.iter().next().unwrap();
-    assert!(c.end > c.start, "comment covers a line range: {}..{}", c.start, c.end);
-    let snippet: Vec<&str> = c.lines.lines().collect();
-    assert!(snippet.len() >= 2, "snippet keeps every selected line: {:?}", c.lines);
-    assert!(
-        snippet.iter().all(|l| l.starts_with(['+', '-', ' '])),
-        "every snippet line keeps its diff marker: {:?}",
-        c.lines
-    );
+    assert_eq!((c.start, c.end), (2, 2));
+    assert_eq!(c.anchor.as_deref(), Some("BETA"));
+    assert_eq!(c.deleted, None, "the range holds a surviving line, so no marker");
 }
 
 #[test]
-fn an_upward_range_comment_spans_the_same_lines_as_a_downward_one() {
+fn an_upward_range_comment_lands_where_a_downward_one_does() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
@@ -2043,8 +2123,7 @@ fn an_upward_range_comment_spans_the_same_lines_as_a_downward_one() {
     app.submit_comment();
 
     let c = app.store.iter().next().expect("a comment");
-    assert!(c.end > c.start, "comment covers a line range: {}..{}", c.start, c.end);
-    assert!(c.lines.lines().count() >= 2, "snippet keeps every selected line: {:?}", c.lines);
+    assert_eq!((c.start, c.anchor.as_deref()), (2, Some("BETA")), "the same place as downward");
 }
 
 #[test]
@@ -2235,7 +2314,7 @@ fn the_diff_title_stays_on_the_composed_file_through_a_refresh() {
 }
 
 #[test]
-fn a_comment_submitted_after_its_file_left_the_changeset_anchors_to_that_file() {
+fn a_comment_submitted_after_its_file_left_the_changeset_writes_nowhere() {
     let r = edited_repo(); // a.rs is the only changed file
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
@@ -2251,17 +2330,21 @@ fn a_comment_submitted_after_its_file_left_the_changeset_anchors_to_that_file() 
     app.reload().unwrap();
     assert_ne!(app.current_entry().map(|f| f.path.as_str()), Some("a.rs"));
 
+    // The line the box was opened on is gone from a.rs, and the drifted cursor's file was
+    // never the target: nothing is written anywhere.
     app.submit_comment();
-    let c = app.store.iter().next().unwrap();
-    assert_eq!(c.file, "a.rs", "comment anchors to its diff's file, not the drifted cursor");
+    assert_eq!(app.status, "file changed on disk; try again");
+    assert_eq!(r.read("a.rs"), "alpha\nbeta\ngamma\ndelta\n");
+    assert_eq!(r.read("z.rs"), "new\n");
+    assert!(app.store.is_empty());
 }
 
 #[test]
 fn deleting_the_last_listed_comment_clamps_the_list_cursor() {
     let r = edited_repo();
     let mut app = app_on(&r);
-    comment_on(&mut app, '+', "one");
-    comment_on(&mut app, '-', "two");
+    comment_on_line(&mut app, '+', "epsilon", "one");
+    comment_on_line(&mut app, '-', "beta", "two");
 
     app.open_list();
     app.list_move(1); // cursor on the last comment (index 1)
@@ -2404,9 +2487,8 @@ fn switching_tabs_restores_each_tab_selection() {
 }
 
 #[test]
-fn changed_count_and_staleness_stay_scope_based_on_all_files() {
+fn changed_count_stays_scope_based_on_all_files() {
     use diff_reckoner::app::Tab;
-    use diff_reckoner::model::Comment;
     let r = Repo::init();
     r.write("a.rs", "one\n");
     r.write("b.rs", "two\n");
@@ -2415,26 +2497,9 @@ fn changed_count_and_staleness_stay_scope_based_on_all_files() {
     let mut app = app_on(&r);
     assert_eq!(app.changed_count(), 1, "Changes counts the one changed file");
 
-    // A diff comment on b.rs, which is in the worktree but not in the changeset.
-    let comment = Comment {
-        file: "b.rs".into(),
-        side: Side::New,
-        start: 1,
-        end: 1,
-        lines: " two".into(),
-        text: "?".into(),
-        diff_anchored: true,
-        rev: diff_reckoner::model::Rev::Worktree,
-    };
-    app.store.add(comment.clone());
-
     enter_tab(&mut app, Tab::AllFiles);
     assert!(app.entries.len() >= 2, "All files lists the whole worktree");
     assert_eq!(app.changed_count(), 1, "the count is the changeset, not the worktree total");
-    assert!(
-        app.is_stale(&comment),
-        "a diff comment keys on the changeset even while All files lists b.rs"
-    );
 }
 
 /// The annotation on the `All files` row for `path`: `Some(Some(_))` annotated, `Some(None)`
@@ -2549,7 +2614,7 @@ fn all_files_lazily_loads_an_expanded_ignored_directory() {
 }
 
 #[test]
-fn content_comment_is_stale_only_when_its_file_is_deleted() {
+fn a_file_view_comment_makes_its_unchanged_file_a_change() {
     use diff_reckoner::app::Tab;
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\n");
@@ -2565,14 +2630,14 @@ fn content_comment_is_stale_only_when_its_file_is_deleted() {
         app.input_push(ch);
     }
     app.submit_comment();
-    let c = app.store.get(0).expect("a comment was made").clone();
-    assert!(!c.diff_anchored, "a File-view comment is content-anchored");
+    assert_eq!(app.store.len(), 1, "a comment was made");
+    assert_eq!(r.read("a.rs"), format!("{}\nalpha\nbeta\n", tag_line("note")));
 
     app.reload().unwrap();
-    assert!(!app.is_stale(&c), "a content comment on an existing, unchanged file is not stale");
+    assert_eq!(app.changed_count(), 1, "the tag line is an ordinary change");
     r.remove("a.rs");
     app.reload().unwrap();
-    assert!(app.is_stale(&c), "it becomes stale only once its file is deleted");
+    assert!(app.store.is_empty(), "a deleted file holds no comments");
 }
 
 #[test]
@@ -2596,7 +2661,7 @@ fn the_tabs_keep_independent_selections() {
 }
 
 #[test]
-fn a_file_view_comment_exports_as_path_line_with_a_context_snippet() {
+fn a_file_view_comment_exports_as_path_line_with_its_annotated_line() {
     use diff_reckoner::app::Tab;
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\ngamma\n");
@@ -2616,9 +2681,7 @@ fn a_file_view_comment_exports_as_path_line_with_a_context_snippet() {
     let target = FakeTarget::ok();
     app.export(&target);
     let out = target.last();
-    assert!(out.contains("a.rs:2"), "header is path:line:\n{out}");
-    assert!(!out.contains("(removed)"), "a content comment never carries (removed):\n{out}");
-    assert!(out.contains(" beta"), "the snippet is the space-prefixed content line:\n{out}");
+    assert_eq!(out, "a.rs:2\nbeta\nwhy", "the comment sits above beta, line 2");
 }
 
 #[test]
@@ -2653,7 +2716,7 @@ fn switching_to_an_empty_file_view_focuses_the_tree() {
 }
 
 #[test]
-fn a_diff_comment_does_not_render_in_the_file_view() {
+fn a_comment_marks_its_line_in_both_the_diff_and_the_file_view() {
     use diff_reckoner::app::Tab;
     use diff_reckoner::diff::View;
     let r = Repo::init();
@@ -2666,18 +2729,15 @@ fn a_diff_comment_does_not_render_in_the_file_view() {
     app.start_comment();
     app.input_push('x');
     app.submit_comment();
-    assert!(app.store.get(0).unwrap().diff_anchored, "made in the Changes diff");
-    assert!(!app.commented_lines().is_empty(), "renders in its own diff view");
+    assert_eq!(app.commented_lines().len(), 1, "the tag line in the Changes diff");
 
-    // In All files, open a.rs as content: the diff-anchored comment must not bleed in.
+    // In All files the same tag line is the file's line 2, and marks there too: one file,
+    // one set of lines.
     enter_tab(&mut app, Tab::AllFiles);
     let row = file_row_of(&app, "a.rs").expect("a.rs listed");
     app.select_file(row).unwrap();
     assert_eq!(app.diff.view, View::File);
-    assert!(
-        app.commented_lines().is_empty(),
-        "a diff-anchored comment does not render in the File view"
-    );
+    assert_eq!(app.commented_lines().into_iter().collect::<Vec<_>>(), [1]);
 }
 
 #[test]
@@ -4717,7 +4777,7 @@ fn a_release_on_the_mouse_down_cell_is_a_click_and_a_real_drag_copies() {
 }
 
 #[test]
-fn ts_one_surface_a_drag_clamps_to_its_pane_and_skips_cards() {
+fn ts_one_surface_a_drag_clamps_to_its_pane_and_copies_a_comment_as_its_line() {
     use diff_reckoner::selection::Surface;
     let r = selection_repo();
     let mut app = app_on(&r);
@@ -4731,46 +4791,24 @@ fn ts_one_surface_a_drag_clamps_to_its_pane_and_skips_cards() {
     assert!(drag.extent.row < app.visible.len());
     press(&mut app, &Keymap::default(), KeyCode::Esc);
 
-    // A code drag driven across a spliced comment card's screen rows copies no card text:
-    // the card sits under row 1 as three display lines (border, body, border), and row 2's
-    // code paints below them.
+    // A comment is an ordinary line of the file, so a drag across it copies its tag line
+    // like any other code.
     app.focus = Focus::Diff;
     app.diff_cursor = 1;
     press(&mut app, &Keymap::default(), KeyCode::Char('c'));
     typed(&mut app, "watch this");
     press(&mut app, &Keymap::default(), KeyCode::Enter);
     assert_eq!(app.store.len(), 1);
-    let inner = diff_reckoner::ui::read_inner_rect(SEL_AREA, &app);
     let (c0, r0) = sel_cell(&app, 0, 0);
+    let (c3, r3) = sel_cell(&app, 3, 5);
     sel_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c0, r0);
-    sel_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), inner.x + 5 + 5, inner.y + 5);
-    let drag = app.text_drag().expect("drag still live");
-    assert_eq!(drag.extent.row, 2, "the extent lands on row 2's code below the card");
-    sel_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), inner.x + 5 + 5, inner.y + 5);
-    assert_eq!(app.status, "copied 23 chars");
-    let text = last_copy().unwrap();
-    assert_eq!(text, "alpha beta\n\tif x {\n日本 z");
-    assert!(!text.contains("watch this"), "spanned cards contribute nothing");
-
-    // A drag that starts on the card selects that card's text, confined to it.
-    app.status.clear();
-    sel_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), inner.x + 4, inner.y + 3);
-    assert!(matches!(
-        app.text_drag().expect("card drag armed").surface,
-        Surface::Card { comment: 0 }
-    ));
-    sel_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), inner.x + 4 + 9, inner.y + 3);
-    sel_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), inner.x + 4 + 9, inner.y + 3);
-    assert_eq!(app.status, "copied 10 chars");
-    assert_eq!(last_copy().as_deref(), Some("watch this"), "the card's own text copies");
-
-    // A double on the card copies the word under the cell; no composer opens over the card
-    sel_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), inner.x + 4, inner.y + 3);
-    sel_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), inner.x + 4, inner.y + 3);
-    sel_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), inner.x + 4, inner.y + 3);
-    sel_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), inner.x + 4, inner.y + 3);
-    assert!(!app.composing(), "a card double-click never opens the composer");
-    assert_eq!(last_copy().as_deref(), Some("watch"), "the card word copies");
+    sel_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), c3, r3);
+    assert_eq!(app.text_drag().expect("drag still live").surface, Surface::Read);
+    let tagged = format!("\t// {} watch this", diff_reckoner::review::TAG);
+    assert_eq!(
+        diff_reckoner::drag_text(&app, SEL_AREA).as_deref(),
+        Some(format!("alpha beta\n{tagged}\n\tif x {{\n日本 z").as_str())
+    );
 }
 
 #[test]
@@ -5519,8 +5557,8 @@ fn an_off_branch_pick_keeps_painting_as_a_row_above_the_list() {
 }
 
 #[test]
-fn edit_never_lands_a_commit_comment_on_a_worktree_line() {
-    let (r, shas) = commits_repo();
+fn a_commits_diff_takes_no_comment_and_edit_opens_the_worktree_file() {
+    let (r, _) = commits_repo();
     let mut app = app_on(&r);
     let keymap = Keymap::default();
     press(&mut app, &keymap, KeyCode::Char('G'));
@@ -5533,32 +5571,37 @@ fn edit_never_lands_a_commit_comment_on_a_worktree_line() {
     app.start_edit();
     let target = app.editor_request.take().unwrap();
     assert_eq!((target.path.as_str(), target.line), ("three.rs", 1));
-    comment_on(&mut app, '+', "commit note");
-    assert_eq!(
-        app.store.get(0).unwrap().rev,
-        diff_reckoner::model::Rev::Commit(diff_reckoner::model::CommitPick::single(&shas[3]))
-    );
-    // Under a worktree scope the comment is in the list but its diff is not showing: `e`
-    // is inert there and the footer does not offer it, so the box never opens over a
-    // same-numbered worktree line.
+    // For the same reason a comment, which is written into the worktree file, is refused.
+    assert!(!app.footer_bands().iter().any(|&(a, _)| a == FooterAction::Comment));
+    app.diff_cursor = row_with(&app, '+');
+    app.start_comment();
+    assert!(!app.composing());
+    assert_eq!(app.status, "comments live in the worktree; switch scope to comment");
+    assert!(app.store.is_empty());
+    assert_eq!(r.read("three.rs"), "3\n", "nothing was written");
+
+    // A worktree comment made elsewhere is listed and editable from any scope: the edit
+    // rewrites the file by identity, whatever diff is showing.
     app.set_scope(Scope::Uncommitted).unwrap();
     app.select_file(0).unwrap();
-    assert_eq!(app.diff_path.as_deref(), Some("root.rs"));
-    // Opened from the diff pane, the way a reviewer reaches it.
-    app.focus = diff_reckoner::app::Focus::Diff;
+    comment_on(&mut app, '+', "root note");
+    app.set_scope(Scope::Commits).unwrap();
     app.open_list();
-    assert!(!app.footer_bands().iter().any(|&(a, _)| a == FooterAction::EditComment));
+    assert!(app.footer_bands().iter().any(|&(a, _)| a == FooterAction::EditComment));
     app.start_edit();
-    assert_eq!(app.mode, Mode::List, "nothing opens");
+    app.input.clear();
+    typed(&mut app, "edited");
+    app.submit_comment();
+    assert_eq!(r.read("root.rs"), format!("{}\ndirty\n", tag_line("edited")));
+
     // `e` on the All files read pane under `commits` still opens the worktree line: the
     // file view's numbers are the worktree's.
     app.close_list();
-    app.set_scope(Scope::Commits).unwrap();
     enter_tab(&mut app, diff_reckoner::app::Tab::AllFiles);
-    app.select_file(file_row(&app, "root.rs")).unwrap();
+    app.select_file(file_row(&app, "one.rs")).unwrap();
     app.focus = diff_reckoner::app::Focus::Diff;
     app.start_edit();
-    assert_eq!(app.editor_request.take().unwrap().line, 1, "root.rs is one line");
+    assert_eq!(app.editor_request.take().unwrap().line, 1, "one.rs is one line");
 }
 
 #[test]
@@ -5678,65 +5721,30 @@ fn a_poll_moves_the_pick_between_the_pick_row_and_the_list() {
 }
 
 #[test]
-fn a_commit_comment_renders_only_while_the_scope_reads_that_commit() {
+fn a_comment_marks_its_line_wherever_the_diff_shows_the_worktree() {
     let (r, shas) = commits_repo();
     let mut app = app_on(&r);
     let keymap = Keymap::default();
-    // A worktree comment on the uncommitted edit.
     app.select_file(0).unwrap();
     comment_on(&mut app, '+', "worktree note");
-    assert_eq!(app.store.get(0).unwrap().rev, diff_reckoner::model::Rev::Worktree);
     assert_eq!(app.commented_lines().len(), 1);
 
-    // A commit comment on `two`.
-    press(&mut app, &keymap, KeyCode::Char('G'));
-    press(&mut app, &keymap, KeyCode::Char('j'));
-    press(&mut app, &keymap, KeyCode::Enter);
-    app.select_file(0).unwrap();
-    comment_on(&mut app, '+', "commit note");
-    assert_eq!(
-        app.store.get(1).unwrap().rev,
-        diff_reckoner::model::Rev::Commit(diff_reckoner::model::CommitPick::single(&shas[2]))
-    );
-    assert_eq!(app.commented_lines().len(), 1, "only the commit comment renders here");
-
-    // A different run that reads the same file is a different diff: the comment hides
-    // there and returns with its own pick.
-    press(&mut app, &keymap, KeyCode::Char('G'));
-    press(&mut app, &keymap, KeyCode::Char('k'));
-    press(&mut app, &keymap, KeyCode::Char('v'));
-    press(&mut app, &keymap, KeyCode::Char('j'));
-    press(&mut app, &keymap, KeyCode::Char('j'));
-    press(&mut app, &keymap, KeyCode::Enter);
-    assert_eq!(
-        app.commit_pick,
-        Some(diff_reckoner::model::CommitPick { oldest: shas[1].clone(), newest: shas[3].clone() })
-    );
-    app.select_file(file_row(&app, "two.rs")).unwrap();
-    assert!(app.commented_lines().is_empty(), "another run's diff carries no card");
-    press(&mut app, &keymap, KeyCode::Char('G'));
-    press(&mut app, &keymap, KeyCode::Esc);
-    press(&mut app, &keymap, KeyCode::Char('j'));
-    press(&mut app, &keymap, KeyCode::Enter);
-    assert_eq!(app.commit_pick, Some(diff_reckoner::model::CommitPick::single(&shas[2])));
-    app.select_file(file_row(&app, "two.rs")).unwrap();
-    assert_eq!(app.commented_lines().len(), 1, "its own pick shows the card again");
-
-    // Back on a worktree scope, the worktree comment renders and the commit one hides.
-    app.set_scope(Scope::Uncommitted).unwrap();
-    app.select_file(0).unwrap();
-    assert_eq!(app.diff_path.as_deref(), Some("root.rs"));
-    assert_eq!(app.commented_lines().len(), 1);
+    // Under `branch` the new side is still the worktree, so the tag line still marks.
     r.set_origin_default("main", &shas[1]);
     app.set_scope(Scope::Branch).unwrap();
     app.select_file(file_row(&app, "root.rs")).unwrap();
     assert_eq!(app.commented_lines().len(), 1, "a worktree comment renders under branch too");
 
-    // The list and the export carry both, unchanged.
-    assert_eq!(app.store.len(), 2);
+    // A `commits` diff shows the commit's lines, which hold no comment.
+    press(&mut app, &keymap, KeyCode::Char('G'));
+    press(&mut app, &keymap, KeyCode::Enter);
+    app.select_file(0).unwrap();
+    assert!(app.commented_lines().is_empty());
+
+    // The list and the export carry it whatever the scope.
+    assert_eq!(app.store.len(), 1);
     let all: Vec<&diff_reckoner::model::Comment> = app.store.iter().collect();
-    let text = diff_reckoner::export::format_all(&all);
-    assert!(text.contains("worktree note") && text.contains("commit note"));
+    assert!(diff_reckoner::export::format_all(&all).contains("worktree note"));
 }
 
 #[test]
@@ -5805,4 +5813,91 @@ fn goto_row(app: &mut App, name: &str) {
     let bp = app.base_picker.as_ref().expect("picker open");
     let i = bp.visible().iter().position(|r| r.name() == name).expect("row listed");
     app.base_picker_goto(i);
+}
+
+#[test]
+fn a_git_ignored_file_takes_a_comment_only_on_a_second_press() {
+    use diff_reckoner::app::Tab;
+    let r = Repo::init();
+    r.write(".gitignore", "gen.rs\n");
+    r.commit_all("init");
+    r.write("gen.rs", "fn generated() {}\n");
+    let mut app = app_on(&r);
+    let keymap = Keymap::default();
+    enter_tab(&mut app, Tab::AllFiles);
+    app.select_file(file_row_of(&app, "gen.rs").expect("gen.rs listed")).unwrap();
+    app.focus = Focus::Diff;
+
+    press(&mut app, &keymap, KeyCode::Char('c'));
+    assert!(!app.composing(), "the first press only warns");
+    assert_eq!(app.status, "gen.rs is git-ignored; comment again to write into it");
+    // Any other key drops the warning, so the next press warns again.
+    press(&mut app, &keymap, KeyCode::Char('j'));
+    press(&mut app, &keymap, KeyCode::Char('c'));
+    assert!(!app.composing(), "a key between the presses re-arms the warning");
+    press(&mut app, &keymap, KeyCode::Char('c'));
+    assert!(app.composing(), "the second press in a row opens the box");
+    typed(&mut app, "generated");
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(r.read("gen.rs"), format!("{}\nfn generated() {{}}\n", tag_line("generated")));
+
+    // `git grep` cannot see an ignored file, yet the scan keeps the comment it was given.
+    app.reload().unwrap();
+    assert_eq!(app.store.len(), 1, "the written ignored file stays in the scan");
+}
+
+#[test]
+fn a_file_with_no_line_comment_syntax_refuses_a_comment() {
+    let r = Repo::init();
+    r.write("data.json", "{\n}\n");
+    r.commit_all("init");
+    r.write("data.json", "{\n  \"a\": 1\n}\n");
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = row_with(&app, '+');
+    app.start_comment();
+    assert!(!app.composing());
+    assert_eq!(app.status, "no line-comment syntax for .json");
+    assert_eq!(r.read("data.json"), "{\n  \"a\": 1\n}\n");
+}
+
+#[test]
+fn a_markdown_file_takes_a_bare_tag_line() {
+    let r = Repo::init();
+    r.write("README.md", "# title\n");
+    r.commit_all("init");
+    r.write("README.md", "# title\nmore\n");
+    let mut app = app_on(&r);
+    comment_on_line(&mut app, '+', "more", "expand on this");
+    let tag = diff_reckoner::review::TAG;
+    assert_eq!(r.read("README.md"), format!("# title\n{tag} expand on this\nmore\n"));
+    assert_eq!(app.store.len(), 1);
+}
+
+#[test]
+fn a_wholly_deleted_file_refuses_a_comment() {
+    let r = edited_repo();
+    r.commit_all("edit");
+    r.remove("a.rs");
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = row_with(&app, '-');
+    app.start_comment();
+    assert!(!app.composing());
+    assert_eq!(app.status, "a deleted file has no lines to comment on");
+}
+
+#[test]
+fn a_comment_on_the_last_removed_lines_goes_at_the_end_of_the_file() {
+    let r = edited_repo();
+    r.commit_all("edit");
+    r.write("a.rs", "alpha\nBETA\ngamma\ndelta\n"); // epsilon removed from the end
+    let mut app = app_on(&r);
+    comment_on_line(&mut app, '-', "epsilon", "why drop it?");
+    assert_eq!(
+        r.read("a.rs"),
+        format!("alpha\nBETA\ngamma\ndelta\n{}\n", tag_line("[DELETED: (epsilon)] why drop it?"))
+    );
+    let c = app.store.get(0).unwrap();
+    assert_eq!((c.start, c.anchor.as_deref()), (5, None), "nothing survives below it");
 }

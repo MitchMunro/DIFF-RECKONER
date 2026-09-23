@@ -1,11 +1,12 @@
-//! The world snapshot: the derived state one refresh produces, built from git alone.
+//! The world snapshot: the derived state one refresh produces, built from git and the
+//! worktree files (the comment scan).
 //!
 //! `build` reads nothing from `App`, so the same call runs synchronously (startup, scope
 //! switches, first visits) and behind the worker (polls, `r`, return visits)
 //! Reconciling a snapshot into place state stays
 //! in `App::reconcile_world`, the one home for the Continuity rules.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -14,7 +15,7 @@ use anyhow::Result;
 use crate::app::Tab;
 use crate::file_list::{Annotation, Entry};
 use crate::git;
-use crate::model::{ChangedFile, CommitPick, Scope};
+use crate::model::{ChangedFile, Comment, CommitPick, Scope};
 
 /// Everything the build reads. A landed snapshot reconciles only while the view still
 /// matches the input that produced it.
@@ -36,6 +37,9 @@ pub struct WorldInput {
     pub commit_pick: Option<CommitPick>,
     /// Expanded ignored directories whose children the `All files` tree loads.
     pub toggled_dirs: HashSet<String>,
+    /// Ignored files this session wrote a comment into. `git grep` cannot see them, so the
+    /// scan reads them by name.
+    pub ignored_comment_files: BTreeSet<String>,
 }
 
 /// The derived state one refresh produces: the scope changeset, the navigator entries, and
@@ -52,6 +56,8 @@ pub struct WorldSnapshot {
     /// The commit `HEAD` named when the build ran, the commit picker's universe key
     /// `None` in an unborn repository.
     pub head: Option<String>,
+    /// Every comment in the worktree, whatever the scope (`review::scan`).
+    pub comments: Vec<Comment>,
 }
 
 /// What one build found the commit pick to be.
@@ -84,7 +90,7 @@ pub struct ScopeBuild {
 }
 
 /// Build the snapshot for `input`. The changeset is computed regardless of tab so the
-/// header count and comment staleness stay correct while `All files` lists the whole
+/// header count stays correct while `All files` lists the whole
 /// worktree.
 pub fn build(input: &WorldInput) -> Result<WorldSnapshot> {
     // Outside a git repo, an empty snapshot paints the quiet empty state rather than a
@@ -96,10 +102,12 @@ pub fn build(input: &WorldInput) -> Result<WorldSnapshot> {
             branch_base: git::BaseStatus::default(),
             pick_status: None,
             head: None,
+            comments: Vec::new(),
         });
     }
     let ScopeBuild { branch_base, pick_status, changed } = build_changed(input)?;
     let head = git::head_oid(&input.repo);
+    let comments = crate::review::scan(&input.repo, &input.ignored_comment_files)?;
     let changed_map = annotate(&changed);
     let entries = match input.tab {
         // The whole worktree (ignored included), with expanded ignored dirs loaded lazily.
@@ -107,7 +115,7 @@ pub fn build(input: &WorldInput) -> Result<WorldSnapshot> {
         // `Changes`.
         Tab::Changes => changed.iter().map(Entry::from_changed).collect(),
     };
-    Ok(WorldSnapshot { changed: changed_map, entries, branch_base, pick_status, head })
+    Ok(WorldSnapshot { changed: changed_map, entries, branch_base, pick_status, head, comments })
 }
 
 /// The active scope's changed files and, on the `branch` scope, the base they diff against —

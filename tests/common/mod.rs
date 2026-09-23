@@ -106,6 +106,10 @@ impl Repo {
         std::fs::write(path, contents).expect("write");
     }
 
+    pub fn read(&self, rel: &str) -> String {
+        std::fs::read_to_string(self.path().join(rel)).expect("read")
+    }
+
     pub fn remove(&self, rel: &str) {
         std::fs::remove_file(self.path().join(rel)).expect("remove");
     }
