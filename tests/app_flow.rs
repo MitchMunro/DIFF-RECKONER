@@ -2763,7 +2763,7 @@ fn theme_selection_swaps_the_palette_and_falls_back() {
 }
 
 #[test]
-fn the_theme_picker_previews_saves_per_side_and_reverts_on_close() {
+fn the_theme_picker_previews_saves_per_side_or_follows_the_terminal() {
     use diff_reckoner::theme::{self, Appearance};
     let repo = Repo::init();
     let config_dir = tempfile::tempdir().unwrap();
@@ -2777,33 +2777,50 @@ fn the_theme_picker_previews_saves_per_side_and_reverts_on_close() {
     assert_eq!(app.mode, Mode::ThemePick);
     assert!(painted(&app, "catppuccin"));
 
-    // Up and down preview within a side; right and left switch sides, previewing there.
+    // Up and down preview within a side, in alphabetical order; right and left switch
+    // sides, previewing there.
     press(&mut app, &keymap, KeyCode::Down);
-    assert!(painted(&app, "dracula"));
+    assert!(painted(&app, "ciapre"));
     press(&mut app, &keymap, KeyCode::Right);
     assert!(painted(&app, "catppuccin-latte"), "the light side opens on its saved theme");
     press(&mut app, &keymap, KeyCode::Down);
-    assert!(painted(&app, "solarized-light"));
+    assert!(painted(&app, "dayfox"));
 
     // Enter saves the highlight as its side's theme and moves that side's check mark only.
     press(&mut app, &keymap, KeyCode::Enter);
-    assert_eq!(app.saved_theme(Appearance::Light), "solarized-light");
+    assert_eq!(app.saved_theme(Appearance::Light), "dayfox");
     assert_eq!(app.saved_theme(Appearance::Dark), "catppuccin");
-    assert_eq!(
-        std::fs::read_to_string(config_dir.path().join("config.toml")).unwrap(),
-        "light_theme = \"solarized-light\"\n"
-    );
+    let config = || std::fs::read_to_string(config_dir.path().join("config.toml")).unwrap();
+    assert_eq!(config(), "light_theme = \"dayfox\"\n");
     press(&mut app, &keymap, KeyCode::Left);
-    assert!(painted(&app, "dracula"), "each side keeps its own highlight");
+    assert!(painted(&app, "ciapre"), "each side keeps its own highlight");
 
-    // Esc closes and drops the preview: the saved theme for this (dark) terminal paints.
+    // Up from a side's first row reaches `follow terminal`, which previews and saves as the
+    // `theme` pin; down from it returns to the first row.
+    for _ in 0..3 {
+        press(&mut app, &keymap, KeyCode::Up);
+    }
+    assert!(app.theme_picker.as_ref().unwrap().on_terminal);
+    assert!(painted(&app, "terminal"));
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert!(app.follows_terminal());
+    assert_eq!(config(), "theme = \"terminal\"\nlight_theme = \"dayfox\"\n");
+    press(&mut app, &keymap, KeyCode::Down);
+    assert!(painted(&app, "ayu-dark"));
+
+    // Esc closes and drops the preview: the saved choice paints.
     press(&mut app, &keymap, KeyCode::Esc);
     assert_eq!(app.mode, Mode::Normal);
     assert!(app.theme_picker.is_none());
-    assert!(painted(&app, "catppuccin"));
+    assert!(painted(&app, "terminal"));
 
-    // `t` closes it too.
+    // Reopened on `follow terminal`; a side's save drops the pin, and `t` closes too.
     press(&mut app, &keymap, KeyCode::Char('t'));
+    assert!(app.theme_picker.as_ref().unwrap().on_terminal);
+    press(&mut app, &keymap, KeyCode::Left);
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert!(!app.follows_terminal());
+    assert_eq!(config(), "dark_theme = \"catppuccin\"\nlight_theme = \"dayfox\"\n");
     press(&mut app, &keymap, KeyCode::Down);
     press(&mut app, &keymap, KeyCode::Char('t'));
     assert_eq!(app.mode, Mode::Normal);

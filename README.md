@@ -40,6 +40,10 @@ Press `t` to pick them: the dark themes on the left, the light on the right. `�
 `←`/`→` switch sides, previewing each theme as you go; `enter` saves the highlighted theme
 (✓) for its side; `t` or `esc` closes and returns to the saved theme.
 
+`follow terminal`, above both lists, uses the terminal's own colors instead: its background,
+text, and sixteen ANSI colors. How that looks depends on the terminal's color scheme. Saving it
+pins `theme = "terminal"`; saving a dark or light theme afterwards unpins it.
+
 The picker writes `config.toml` in `$DIFF_RECKONER_CONFIG_DIR`, else
 `$XDG_CONFIG_HOME/diff-reckoner` (`~/.config/diff-reckoner`). You can also edit it by hand;
 the names are the built-in list (`CATALOG` in `src/theme.rs`):
@@ -47,7 +51,7 @@ the names are the built-in list (`CATALOG` in `src/theme.rs`):
 ```toml
 dark_theme = "cobalt2"        # default: catppuccin
 light_theme = "xcode-light"   # default: catppuccin-latte
-# theme = "nord"              # pin one theme regardless of background
+# theme = "nord"              # pin one theme regardless of background, or "terminal"
 ```
 
 `--theme <name>` overrides both for one run.

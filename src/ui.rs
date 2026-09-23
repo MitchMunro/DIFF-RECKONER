@@ -37,14 +37,31 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 /// Give every cell still on the terminal's default colors the theme's own: `base` behind,
 /// `text` in front, so the whole frame — gaps, popups under `Clear`, the config error —
-/// follows the theme rather than the terminal.
+/// follows the theme rather than the terminal. Under the `terminal` theme, its dim text
+/// ([`crate::theme::FAINT`], or the index a syntax span decodes it to) becomes default text at faint
+/// intensity, never bold, so it recedes as the terminal's own dim rather than a near-black.
+/// Its [`crate::theme::INVERSE`] fill becomes reverse video over plain default text — syntax
+/// colors would turn to colored blocks — and as a border color, the same faint text.
 fn paint_theme_defaults(frame: &mut Frame, app: &App) {
+    use crate::theme::{FAINT, INVERSE};
     let p = app.palette();
+    let terminal = p.follows_terminal();
     for cell in &mut frame.buffer_mut().content {
+        if terminal && cell.bg == INVERSE {
+            cell.bg = Color::Reset;
+            cell.fg = Color::Reset;
+            cell.modifier.remove(Modifier::DIM);
+            cell.modifier.insert(Modifier::REVERSED);
+            continue;
+        }
         if cell.bg == Color::Reset {
             cell.bg = p.base;
         }
-        if cell.fg == Color::Reset {
+        if terminal && matches!(cell.fg, FAINT | INVERSE | Color::Indexed(8)) {
+            cell.fg = Color::Reset;
+            cell.modifier.remove(Modifier::BOLD);
+            cell.modifier.insert(Modifier::DIM);
+        } else if cell.fg == Color::Reset {
             cell.fg = p.text;
         }
     }
@@ -117,6 +134,10 @@ fn scrim_behind(frame: &mut Frame, app: &App, area: Rect) {
         for y in band.y..band.y + band.height {
             for x in band.x..band.x + band.width {
                 if let Some(cell) = buf.cell_mut((x, y)) {
+                    // An ANSI color has no blend, so the terminal's own dim recedes it.
+                    if !matches!(cell.fg, Color::Rgb(..)) {
+                        cell.modifier.insert(Modifier::DIM);
+                    }
                     cell.fg = p.scrim(cell.fg);
                     cell.bg = p.scrim(cell.bg);
                 }
@@ -990,7 +1011,7 @@ fn composer_lines(
 
 /// The block-cursor style: the character under the caret shown dark-on-orange.
 fn caret_style(p: &Palette) -> Style {
-    Style::default().fg(p.surface0).bg(p.orange)
+    Style::default().fg(p.ink()).bg(p.orange)
 }
 
 /// One box row with the caret block over the character at `col`.
@@ -1987,9 +2008,14 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
         } else {
             format!("  ⋯  {} unmodified lines", row.hidden())
         };
-        let mut line = Line::from(Span::styled(label, Style::default().fg(pal.dim0)));
+        // Without a bar fill, a resting fold is faint and a rule runs out its row, so it still
+        // reads as a divider rather than a line of code.
+        let ruled = !cursor && !pal.fills_bars();
+        let fg = if ruled { pal.dim1 } else { pal.dim0 };
+        let mut line = Line::from(Span::styled(label, Style::default().fg(fg)));
         if let Some(pad) = width.checked_sub(line.width()).filter(|p| *p > 0) {
-            line.push_span(Span::raw(" ".repeat(pad)));
+            let rule = if ruled { format!(" {}", "─".repeat(pad - 1)) } else { " ".repeat(pad) };
+            line.push_span(Span::styled(rule, Style::default().fg(fg)));
         }
         let bg = if cursor { pal.cursor_bg(focused) } else { pal.surface0 };
         return vec![line.style(Style::default().bg(bg).add_modifier(Modifier::BOLD))];
@@ -2082,11 +2108,7 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
                 ]
             };
             let mut spans = gutter;
-            spans.extend(cells_to_spans(
-                chunk,
-                emph_bg,
-                HlStyle { bg: pal.yellow, fg: pal.surface0 },
-            ));
+            spans.extend(cells_to_spans(chunk, emph_bg, HlStyle { bg: pal.yellow, fg: pal.ink() }));
             let mut line = Line::from(spans);
             if let Some(pad) = width.checked_sub(line.width()).filter(|p| *p > 0) {
                 line.push_span(Span::raw(" ".repeat(pad)));
@@ -2097,10 +2119,6 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
             }
         })
         .collect()
-}
-
-pub(crate) fn rgb(c: crate::diff::Rgb) -> Color {
-    Color::Rgb(c.0, c.1, c.2)
 }
 
 /// Tabs expand to this many columns.
@@ -2210,7 +2228,7 @@ fn code_cells(row: &Row, emph_on: bool, hl_ranges: &[(u32, u32)]) -> Vec<Cell> {
     let mut idx = 0u32;
     let mut col = 0usize; // display column, so tab stops land right after wide glyphs too
     for s in row.spans() {
-        let fg = rgb(s.color);
+        let fg = s.color;
         for ch in s.text.chars() {
             let emph = in_emph(idx);
             let hl = in_hl(idx);
@@ -3112,8 +3130,18 @@ pub fn hit_base_picker_row(area: Rect, app: &App, col: u16, row: u16) -> Option<
 /// A theme row's lead before the name: a space, then the check mark or its blank.
 const THEME_ROW_LEAD: usize = 3;
 
-/// The theme picker: the dark list and the light list side by side, each under its header.
-/// The active side's highlight takes the selection fill; each side checks its saved theme.
+/// The note above the theme picker while `follow terminal` is highlighted.
+const TERMINAL_NOTE: &str = "Note: Results vary depending on the terminal.";
+
+/// A theme row's check mark, or the blank that keeps the names aligned.
+fn theme_mark(p: &Palette, checked: bool) -> Span<'static> {
+    if checked { Span::styled(" ✓ ", Style::default().fg(p.green)) } else { Span::raw("   ") }
+}
+
+/// The theme picker: `follow terminal` across the top, then the dark list and the light list
+/// side by side, each under its header. The highlight takes the selection fill; the saved
+/// choice is checked — `follow terminal`, or each side's theme. While `follow terminal` is
+/// highlighted, a note sits on the row above the box.
 fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
     use crate::theme::{self, Appearance};
     let Some(tp) = &app.theme_picker else { return };
@@ -3122,8 +3150,18 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
     // The lead, the name, one column of air.
     let col_w = THEME_ROW_LEAD + widest_name + 1;
     let rows = theme::names(Appearance::Dark).len().max(theme::names(Appearance::Light).len());
-    // Both columns and the rule between them; the header row and both borders.
-    let popup = menu_popup(area, app, 2 * col_w + 1, "theme", rows + 3);
+    // Both columns and the rule between them, or the note if wider; the note row, both
+    // borders, the `follow terminal` row, and the header row.
+    let widest = (2 * col_w + 1).max(TERMINAL_NOTE.width());
+    let outer = menu_popup(area, app, widest, "theme", rows + 5);
+    let note = Rect { height: outer.height.min(1), ..outer };
+    let popup = Rect { y: outer.y + note.height, height: outer.height - note.height, ..outer };
+    if tp.on_terminal {
+        let note = Rect { width: (TERMINAL_NOTE.width() as u16).min(note.width), ..note };
+        frame.render_widget(Clear, note);
+        let text = Span::styled(TERMINAL_NOTE, Style::default().fg(p.yellow));
+        frame.render_widget(Paragraph::new(Line::from(text)), note);
+    }
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -3134,12 +3172,21 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
     if inner.height == 0 {
         return;
     }
+    let follows = app.follows_terminal();
+    let terminal_row = selectable_row(
+        p,
+        vec![theme_mark(p, follows), Span::styled("follow terminal", text_style(p))],
+        inner.width as usize,
+        tp.on_terminal.then_some(p.surface2),
+    );
+    frame.render_widget(List::new([terminal_row]), Rect { height: 1, ..inner });
+    let lists = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
     let [left, rule, right] = Layout::horizontal([
         Constraint::Length(col_w as u16),
         Constraint::Length(1),
         Constraint::Min(0),
     ])
-    .areas(inner);
+    .areas(lists);
     let bar =
         vec![Line::from(Span::styled("│", Style::default().fg(p.dim2))); rule.height as usize];
     frame.render_widget(Paragraph::new(bar), rule);
@@ -3147,7 +3194,7 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
     for (side, column, label) in
         [(Appearance::Dark, left, "dark"), (Appearance::Light, right, "light")]
     {
-        let active = tp.side == side;
+        let active = tp.side == side && !tp.on_terminal;
         let header_style = if active {
             Style::default().fg(p.purple).add_modifier(Modifier::BOLD)
         } else {
@@ -3168,12 +3215,10 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
             .skip(first)
             .take(list_area.height as usize)
             .map(|(i, &name)| {
-                let mark = if name == saved {
-                    Span::styled(" ✓ ", Style::default().fg(p.green))
-                } else {
-                    Span::raw("   ")
-                };
-                let spans = vec![mark, Span::styled(name, text_style(p))];
+                let spans = vec![
+                    theme_mark(p, !follows && name == saved),
+                    Span::styled(name, text_style(p)),
+                ];
                 selectable_row(p, spans, width, (active && i == cursor).then_some(p.surface2))
             })
             .collect();
@@ -3731,7 +3776,7 @@ fn search_preview_line(
             for sp in row.spans() {
                 spans.push(Span::styled(
                     sp.text.replace('\t', "    "),
-                    Style::default().fg(rgb(sp.color)),
+                    Style::default().fg(sp.color),
                 ));
             }
             Line::from(spans)
@@ -3750,7 +3795,7 @@ fn search_preview_line(
             let mut colors: Vec<(usize, Color)> = Vec::new();
             let mut at = 0usize;
             for sp in row.spans() {
-                colors.push((at, rgb(sp.color)));
+                colors.push((at, sp.color));
                 at += sp.text.len();
             }
             let mut ci = 0usize;

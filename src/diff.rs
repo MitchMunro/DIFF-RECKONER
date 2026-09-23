@@ -12,14 +12,12 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::highlight::Highlighter;
 
-/// An 8-bit RGB color.
-pub type Rgb = (u8, u8, u8);
-
-/// A run of one line's text in a single color.
+/// A run of one line's text in a single color: RGB from most syntax themes, an ANSI index
+/// or the terminal default from the `terminal` theme.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Span {
     pub text: String,
-    pub color: Rgb,
+    pub color: ratatui::style::Color,
 }
 
 /// A rendered diff row. Content rows (`Context`/`Deletion`/`Insertion`) are selectable

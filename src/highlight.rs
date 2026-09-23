@@ -16,11 +16,13 @@ use syntect::util::LinesWithEndings;
 
 use std::sync::OnceLock;
 
-use crate::diff::{Rgb, Span};
+use ratatui::style::Color;
+
+use crate::diff::Span;
 use crate::theme::{Palette, SyntaxChoice};
 
 /// The default text color when a theme carries none, or its syntax theme fails to load.
-const DEFAULT_FG: Rgb = (0xcd, 0xd6, 0xf4);
+const DEFAULT_FG: Color = Color::Rgb(0xcd, 0xd6, 0xf4);
 
 /// The broad bat/two-face syntax set, built once per process (it is expensive to
 /// deserialize) and shared across every `Highlighter`.
@@ -40,7 +42,7 @@ fn embedded_themes() -> &'static two_face::theme::EmbeddedLazyThemeSet {
 /// into spans against the shared syntax set.
 pub struct Highlighter {
     theme: Option<Theme>,
-    default_fg: Rgb,
+    default_fg: Color,
 }
 
 impl fmt::Debug for Highlighter {
@@ -69,10 +71,8 @@ impl Highlighter {
             SyntaxChoice::Embedded(name) => Some(embedded_themes().get(name).clone()),
             SyntaxChoice::Derived(palette) => Some(derived_theme(&palette)),
         };
-        let default_fg = theme
-            .as_ref()
-            .and_then(|t| t.settings.foreground)
-            .map_or(DEFAULT_FG, |c| (c.r, c.g, c.b));
+        let default_fg =
+            theme.as_ref().and_then(|t| t.settings.foreground).map_or(DEFAULT_FG, from_syntect);
         Self { theme, default_fg }
     }
 
@@ -99,7 +99,7 @@ impl Highlighter {
                     .into_iter()
                     .map(|(style, text)| Span {
                         text: text.trim_end_matches('\n').to_string(),
-                        color: (style.foreground.r, style.foreground.g, style.foreground.b),
+                        color: from_syntect(style.foreground),
                     })
                     .collect(),
                 // A grammar error degrades to plain text rather than blocking the diff.
@@ -153,11 +153,40 @@ fn derived_theme(p: &Palette) -> Theme {
     }
 }
 
-/// A palette color as syntect's; palette colors are always RGB.
-fn syntect_color(color: ratatui::style::Color) -> SyntectColor {
+/// A palette color as syntect's. syntect has only RGBA, so the `terminal` theme's colors ride
+/// in the alpha channel as bat encodes them: alpha 0 carries an ANSI index in `r`, alpha 1 the
+/// terminal default.
+fn syntect_color(color: Color) -> SyntectColor {
+    let ansi = |r| SyntectColor { r, g: 0, b: 0, a: 0 };
     match color {
-        ratatui::style::Color::Rgb(r, g, b) => SyntectColor { r, g, b, a: 0xff },
-        _ => SyntectColor::WHITE,
+        Color::Rgb(r, g, b) => SyntectColor { r, g, b, a: 0xff },
+        Color::Reset => SyntectColor { r: 0, g: 0, b: 0, a: 1 },
+        Color::Indexed(i) => ansi(i),
+        Color::Black => ansi(0),
+        Color::Red => ansi(1),
+        Color::Green => ansi(2),
+        Color::Yellow => ansi(3),
+        Color::Blue => ansi(4),
+        Color::Magenta => ansi(5),
+        Color::Cyan => ansi(6),
+        Color::Gray => ansi(7),
+        Color::DarkGray => ansi(8),
+        Color::LightRed => ansi(9),
+        Color::LightGreen => ansi(10),
+        Color::LightYellow => ansi(11),
+        Color::LightBlue => ansi(12),
+        Color::LightMagenta => ansi(13),
+        Color::LightCyan => ansi(14),
+        Color::White => ansi(15),
+    }
+}
+
+/// A syntect color as the renderer's, decoding [`syntect_color`]'s alpha convention.
+fn from_syntect(c: SyntectColor) -> Color {
+    match c.a {
+        0 => Color::Indexed(c.r),
+        1 => Color::Reset,
+        _ => Color::Rgb(c.r, c.g, c.b),
     }
 }
 
@@ -180,7 +209,7 @@ mod tests {
         assert!(spans.len() > 1, "rust tokenizes into several spans");
         assert_eq!(spans.iter().map(|s| s.text.as_str()).collect::<String>(), "let x = 1;");
         // The Catppuccin keyword color (purple) differs from the default text color.
-        assert!(spans.iter().any(|s| s.text == "let" && s.color != (0xcd, 0xd6, 0xf4)));
+        assert!(spans.iter().any(|s| s.text == "let" && s.color != super::DEFAULT_FG));
     }
 
     #[test]
@@ -188,7 +217,7 @@ mod tests {
         let h = Highlighter::new(mocha());
         let lines = h.highlight("alpha\nbeta\n", None);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], vec![super::Span { text: "alpha".into(), color: (0xcd, 0xd6, 0xf4) }]);
+        assert_eq!(lines[0], vec![super::Span { text: "alpha".into(), color: super::DEFAULT_FG }]);
     }
 
     #[test]
@@ -211,11 +240,7 @@ mod tests {
         assert!(matches!(t.syntax, theme::SyntaxChoice::Derived(_)));
         let spans = Highlighter::new(t.syntax).highlight("let x = \"s\";\n", Some("rs"));
         let color_of = |text: &str| spans[0].iter().find(|s| s.text.trim() == text).unwrap().color;
-        let rgb = |c| match c {
-            ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
-            _ => unreachable!(),
-        };
-        assert_eq!(color_of("let"), rgb(t.palette.legible(t.palette.purple)));
+        assert_eq!(color_of("let"), t.palette.legible(t.palette.purple));
         assert_ne!(color_of("let"), color_of("x"), "keywords and identifiers differ");
     }
 }

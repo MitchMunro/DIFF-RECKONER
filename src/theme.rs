@@ -19,6 +19,10 @@ use two_face::theme::EmbeddedThemeName;
 /// terminal: Catppuccin Mocha on a dark background, Latte on a light one.
 pub const DEFAULT: &str = "auto";
 
+/// The theme that follows the terminal: its own ANSI colors and default background and text,
+/// in place of any palette. Outside [`CATALOG`], since it is neither dark nor light.
+pub const TERMINAL: &str = "terminal";
+
 /// The themes `auto` picks when the config names none.
 pub const DEFAULT_DARK: &str = "catppuccin";
 pub const DEFAULT_LIGHT: &str = "catppuccin-latte";
@@ -155,9 +159,33 @@ impl Palette {
         }
     }
 
+    /// Text on an accent fill (the caret block, a find match): `surface0` — but ANSI black under
+    /// the `terminal` theme, whose `surface0` may be no color at all.
+    pub fn ink(&self) -> Color {
+        if self.follows_terminal() { Color::Black } else { self.surface0 }
+    }
+
+    /// Whether the bars (tab bar, footer, fold rows) paint a `surface0` fill. The `terminal`
+    /// theme's dark surface is none, so its bars sit on the terminal's own background.
+    pub fn fills_bars(&self) -> bool {
+        self.surface0 != Color::Reset
+    }
+
+    /// Whether this is the `terminal` theme's palette — the only one on the terminal's own
+    /// background — whose [`FAINT`] text the renderer paints at faint intensity and whose
+    /// [`INVERSE`] fill it paints as reverse video.
+    pub fn follows_terminal(&self) -> bool {
+        self.base == Color::Reset
+    }
+
     /// Step `color` toward `text` until it reads on `base` at [`MIN_TOKEN_CONTRAST`], so a pale
     /// accent (an ANSI yellow on a light background) stays legible as a token color.
+    /// An ANSI color, or any color on the terminal's own background, has no known contrast and
+    /// passes through.
     pub fn legible(&self, color: Color) -> Color {
+        if !matches!((color, self.base), (Color::Rgb(..), Color::Rgb(..))) {
+            return color;
+        }
         (0..=10)
             .map(|step| blend(color, self.text, f64::from(step) / 10.0))
             .find(|c| contrast(*c, self.base) >= MIN_TOKEN_CONTRAST)
@@ -175,9 +203,9 @@ pub fn resolve(name: Option<&str>) -> Theme {
     resolve_for(name, detected())
 }
 
-/// Resolve a theme name to a `Theme`. `None`, `auto`, an unknown name, or a not-yet-supported
-/// one (including `terminal`) falls back to the default for `appearance` and logs; never a
-/// half-palette.
+/// Resolve a theme name to a `Theme`. `None`, `auto`, or an unknown name falls back to the
+/// default for `appearance` and logs; never a half-palette. `terminal` takes its fills'
+/// direction from `appearance`.
 pub fn resolve_for(name: Option<&str>, appearance: Appearance) -> Theme {
     let auto = || match appearance {
         Appearance::Dark => catppuccin(),
@@ -185,6 +213,7 @@ pub fn resolve_for(name: Option<&str>, appearance: Appearance) -> Theme {
     };
     match name {
         None | Some(DEFAULT) => auto(),
+        Some(TERMINAL) => follow_terminal(appearance),
         Some(n) => build(n).unwrap_or_else(|| {
             logln!("unknown theme {n:?}; using {DEFAULT}");
             auto()
@@ -195,12 +224,15 @@ pub fn resolve_for(name: Option<&str>, appearance: Appearance) -> Theme {
 /// Whether `name` selects a complete built-in theme. Plugin configuration validates against
 /// this same catalog before a snapshot is applied.
 pub fn is_known(name: &str) -> bool {
-    name == DEFAULT || is_builtin(name)
+    name == DEFAULT || name == TERMINAL || is_builtin(name)
 }
 
-/// The [`CATALOG`] themes of `appearance`, in catalog order — one side of the theme picker.
+/// The [`CATALOG`] themes of `appearance`, alphabetical — one side of the theme picker.
 pub fn names(appearance: Appearance) -> Vec<&'static str> {
-    CATALOG.iter().filter(|(_, a)| *a == appearance).map(|&(n, _)| n).collect()
+    let mut names: Vec<_> =
+        CATALOG.iter().filter(|(_, a)| *a == appearance).map(|&(n, _)| n).collect();
+    names.sort_unstable();
+    names
 }
 
 /// The appearance of catalog theme `name`; `None` outside the catalog.
@@ -336,6 +368,56 @@ struct Anchors {
     orange: Color,
     purple: Color,
     blue: Color,
+}
+
+/// The `terminal` theme's dim text, as its palette carries it: the renderer paints it as the
+/// terminal's default text at faint intensity ([`Palette::follows_terminal`]). ANSI has no dim
+/// color — bright black is near-black in some schemes (Solarized's is its darkest tone) — so the
+/// faint attribute is the one dim that reads the same under every scheme.
+pub const FAINT: Color = Color::DarkGray;
+
+/// The `terminal` theme's strongest fill on a dark terminal, as its palette carries it: the
+/// renderer paints it as reverse video over default text ([`Palette::follows_terminal`]). No
+/// ANSI color is reliably off every dark background — Solarized's bright black is its
+/// background — but reverse video always is. Never painted as itself.
+pub const INVERSE: Color = Color::Indexed(255);
+
+/// The `terminal` theme: the terminal's default background and text, and its sixteen ANSI
+/// colors for everything else, so the terminal's own scheme decides how it looks. ANSI colors
+/// cannot be blended, so there are no tinted diff rows — the `▌` bars mark them — the dim
+/// roles are [`FAINT`], and the surfaces are the grays, ordered by `appearance` — on a dark
+/// terminal the strongest is [`INVERSE`].
+fn follow_terminal(appearance: Appearance) -> Theme {
+    let (surface, soft, strong) = match appearance {
+        // No ANSI color is a quiet bar on every dark background (black is a hole on a gray
+        // one), so the dark bars take no fill.
+        Appearance::Dark => (Color::Reset, Color::Black, INVERSE),
+        Appearance::Light => (Color::White, Color::Gray, Color::Gray),
+    };
+    let palette = Palette {
+        base: Color::Reset,
+        surface0: surface,
+        surface1: soft,
+        surface2: strong,
+        dim2: FAINT,
+        dim1: FAINT,
+        // The dim role lifted onto a fill is full-strength text.
+        dim0: Color::Reset,
+        text: Color::Reset,
+        red: Color::Red,
+        green: Color::Green,
+        yellow: Color::Yellow,
+        orange: Color::LightRed,
+        purple: Color::Magenta,
+        blue: Color::Blue,
+        del_bg: Color::Reset,
+        ins_bg: Color::Reset,
+        emph_del_bg: Color::Red,
+        emph_ins_bg: Color::Green,
+        match_hl: Color::Yellow,
+        sel_bg: Color::Blue,
+    };
+    Theme { name: TERMINAL, palette, syntax: SyntaxChoice::Derived(palette) }
 }
 
 /// Catppuccin Mocha: pinned to its canonical values so it renders identically to the
@@ -671,9 +753,12 @@ mod tests {
     }
 
     #[test]
-    fn unknown_and_terminal_fall_back_to_default() {
+    fn unknown_falls_back_to_default_and_terminal_is_its_own() {
         assert_eq!(resolve(Some("nope")).name, "catppuccin");
-        assert_eq!(resolve(Some("terminal")).name, "catppuccin");
+        let terminal = resolve(Some("terminal"));
+        assert_eq!(terminal.name, "terminal");
+        assert_eq!((terminal.palette.base, terminal.palette.text), (Color::Reset, Color::Reset));
+        assert!(super::is_known("terminal") && !super::is_builtin("terminal"));
         assert_eq!(resolve(None).name, "catppuccin");
     }
 
@@ -689,12 +774,13 @@ mod tests {
     }
 
     #[test]
-    fn names_split_the_catalog_by_appearance() {
+    fn names_split_the_catalog_by_appearance_alphabetically() {
         use super::{appearance_of, names};
         let dark = names(Appearance::Dark);
         let light = names(Appearance::Light);
-        assert_eq!((dark[0], dark.len()), ("catppuccin", 20));
-        assert_eq!((light[0], light.len()), ("catppuccin-latte", 20));
+        assert_eq!((dark[0], dark.len()), ("ayu-dark", 20));
+        assert_eq!((light[0], light.len()), ("alabaster", 20));
+        assert!(dark.is_sorted() && light.is_sorted(), "each side lists alphabetically");
         assert_eq!(appearance_of("iceberg-light"), Some(Appearance::Light));
         assert_eq!(appearance_of("auto"), None);
     }

@@ -228,13 +228,15 @@ impl BasePicker {
 }
 
 /// The theme picker's state while it is open: which side (the dark list or the light) the
-/// highlight is on, and its row on each side. The check marks are the config snapshot's
-/// `dark_theme`/`light_theme`, not state of its own.
+/// highlight is on, its row on each side, or the `follow terminal` row above them. The check
+/// marks are the config snapshot's `theme`/`dark_theme`/`light_theme`, not state of its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThemePicker {
     pub side: theme::Appearance,
     pub dark_cursor: usize,
     pub light_cursor: usize,
+    /// Whether the highlight is on the `follow terminal` row above both sides.
+    pub on_terminal: bool,
 }
 
 impl ThemePicker {
@@ -253,9 +255,13 @@ impl ThemePicker {
         }
     }
 
-    /// The theme under the highlight on the active side.
+    /// The theme under the highlight: `terminal` on its row, else the active side's.
     pub fn highlighted(&self) -> &'static str {
-        theme::names(self.side)[self.cursor(self.side)]
+        if self.on_terminal {
+            theme::TERMINAL
+        } else {
+            theme::names(self.side)[self.cursor(self.side)]
+        }
     }
 }
 
@@ -1001,9 +1007,15 @@ impl App {
         self.config_snapshot().theme_for(appearance)
     }
 
-    /// Open the theme picker on the active theme's side, each side highlighting the active
-    /// theme when it is there and that side's saved theme otherwise. Nothing previews until
-    /// the highlight moves.
+    /// Whether the config pins the `terminal` theme — the `follow terminal` row's check mark.
+    /// While it does, the side check marks are not in effect and do not show.
+    pub fn follows_terminal(&self) -> bool {
+        self.config_snapshot().theme() == theme::TERMINAL
+    }
+
+    /// Open the theme picker on the active theme's row: `follow terminal`, or its side, each
+    /// side highlighting the active theme when it is there and that side's saved theme
+    /// otherwise. Nothing previews until the highlight moves.
     pub fn open_theme_picker(&mut self) {
         let active = self.theme_name;
         let row = |side| {
@@ -1015,6 +1027,7 @@ impl App {
             side: theme::appearance_of(active).unwrap_or_else(theme::detected),
             dark_cursor: row(theme::Appearance::Dark),
             light_cursor: row(theme::Appearance::Light),
+            on_terminal: active == theme::TERMINAL,
         });
         self.mode = Mode::ThemePick;
     }
@@ -1030,20 +1043,35 @@ impl App {
         self.refresh_theme();
     }
 
-    /// Move the highlight up or down its side and preview the theme under it.
+    /// Move the highlight up or down its side and preview the theme under it. Up from a side's
+    /// first row reaches `follow terminal`; down from there, that side's first row.
     pub fn theme_picker_move(&mut self, delta: isize) {
         let Some(tp) = self.theme_picker.as_mut() else { return };
         let len = theme::names(tp.side).len();
-        let cursor = tp.cursor_mut();
-        *cursor = step(*cursor, delta, len);
-        self.preview_highlighted_theme();
+        let before = (tp.on_terminal, tp.cursor(tp.side));
+        if tp.on_terminal {
+            if delta > 0 {
+                tp.on_terminal = false;
+                *tp.cursor_mut() = step(0, delta - 1, len);
+            }
+        } else if tp.cursor(tp.side) as isize + delta < 0 {
+            tp.on_terminal = true;
+        } else {
+            let cursor = tp.cursor_mut();
+            *cursor = step(*cursor, delta, len);
+        }
+        if before != (tp.on_terminal, tp.cursor(tp.side)) {
+            self.preview_highlighted_theme();
+        }
     }
 
-    /// Move the highlight to the other side's list and preview the theme under it there.
+    /// Move the highlight to `side`'s list — from the other side, or down off `follow
+    /// terminal` — and preview the theme under it there.
     pub fn theme_picker_side(&mut self, side: theme::Appearance) {
         let Some(tp) = self.theme_picker.as_mut() else { return };
-        if tp.side != side {
+        if tp.side != side || tp.on_terminal {
             tp.side = side;
+            tp.on_terminal = false;
             self.preview_highlighted_theme();
         }
     }
@@ -1053,17 +1081,23 @@ impl App {
         self.refresh_theme();
     }
 
-    /// Save the highlighted theme as its side's `auto` theme in `config.toml`, and apply the
-    /// file it wrote so the check mark moves now. The save also retires a `--theme` override:
-    /// the reviewer just chose what should paint.
+    /// Save the highlight in `config.toml` — `follow terminal` as the `theme` pin, a side's
+    /// theme as that side's `auto` theme — and apply the file it wrote so the check mark moves
+    /// now. The save also retires a `--theme` override: the reviewer just chose what should
+    /// paint.
     pub fn theme_picker_save(&mut self) {
         let Some(tp) = &self.theme_picker else { return };
-        let (side, name) = (tp.side, tp.highlighted());
+        let (on_terminal, side, name) = (tp.on_terminal, tp.side, tp.highlighted());
         let Some(dir) = self.config_dir.clone() else {
             self.status = "no config directory to save the theme to".into();
             return;
         };
-        if let Err(e) = crate::config::save_theme(&dir, side, name) {
+        let saved = if on_terminal {
+            crate::config::save_follow_terminal(&dir)
+        } else {
+            crate::config::save_theme(&dir, side, name)
+        };
+        if let Err(e) = saved {
             self.status = format!("theme not saved: {e}");
             return;
         }

@@ -1215,19 +1215,40 @@ fn the_theme_picker_lists_both_sides_and_checks_each_saved_theme() {
     let out = render(&app);
     let header = out.lines().find(|l| l.contains(" dark") && l.contains(" light"));
     assert!(header.is_some(), "the dark and light lists sit side by side:\n{out}");
-    let row = out.lines().find(|l| l.contains("catppuccin ")).expect("the first row");
-    assert!(row.contains("✓ catppuccin ") && row.contains("✓ catppuccin-latte"), "{row}");
-    assert!(out.contains("iceberg-light") && out.contains("tomorrow-night"), "every theme lists");
+    let lines: Vec<&str> = out.lines().collect();
+    let at = |needle: &str| lines.iter().position(|l| l.contains(needle)).expect(needle);
+    // `follow terminal` sits above the headers, unchecked, with no note while unhighlighted.
+    assert!(at("follow terminal") < at(" dark"));
+    assert!(!lines[at("follow terminal")].contains('✓'));
+    assert!(!out.contains("Results vary"));
+    // Each side is alphabetical and checks its saved theme.
+    assert!(lines[at("ayu-dark")].contains("alabaster"), "each side starts alphabetically");
+    assert!(at("ayu-dark") < at("✓ catppuccin ") && at("✓ catppuccin ") < at("ciapre"));
+    assert!(out.contains("✓ catppuccin-latte"));
+    assert!(out.contains("iceberg-light") && out.contains("xcode-dark"), "every theme lists");
     // No scrim: the page beside the popup is the preview, painted exactly as with it closed.
     let buf = render_buffer(&app);
     assert_eq!(buf.cell((0, 1)), closed.cell((0, 1)));
     // The active side's highlight takes the selection fill.
-    let (x, y) = out
-        .lines()
+    let (x, y) = lines
+        .iter()
         .enumerate()
         .find_map(|(y, l)| l.find("✓ catppuccin ").map(|b| (l[..b].chars().count(), y)))
         .unwrap();
     assert_eq!(buf.cell((x as u16 + 2, y as u16)).unwrap().bg, SELECTION_BG);
+}
+
+#[test]
+fn highlighting_follow_terminal_shows_the_note_above_the_box() {
+    let mut app = edited_app();
+    app.open_theme_picker();
+    app.theme_picker_move(-99);
+    let out = render(&app);
+    let lines: Vec<&str> = out.lines().collect();
+    let note =
+        lines.iter().position(|l| l.contains("Note: Results vary depending on the terminal."));
+    let top = lines.iter().position(|l| l.contains("┌ theme"));
+    assert_eq!(note.map(|n| n + 1), top, "the note sits on the row above the box:\n{out}");
 }
 
 /// An `edited_app` running under `[keybindings]` from a real config file.
@@ -2875,4 +2896,88 @@ fn a_long_folder_name_leaves_room_for_the_dot() {
     app.expand_dir();
     let row = files_row(&app, "…");
     assert_eq!(row.replacen('▾', "▸", 1), collapsed_name, "the name reads the same expanded");
+}
+
+#[test]
+fn follow_terminal_paints_dim_text_faint_never_near_black() {
+    use diff_reckoner::app::Tab;
+    use ratatui::style::{Color, Modifier};
+    let r = Repo::init();
+    r.write("hello.rs", "// note\nlet a = 1;\n");
+    r.commit_all("init");
+    r.write("hello.rs", "// note\nlet a = 2;\n");
+    let mut app = app_on(&r);
+    app.set_cli_theme(Some("terminal".to_string()));
+    enter_tab(&mut app, Tab::Changes);
+    let buf = render_buffer(&app);
+    // Bright black is near-black in some schemes, so no cell keeps it.
+    assert!(buf.content.iter().all(|c| !matches!(c.fg, Color::DarkGray | Color::Indexed(8))));
+    // The syntax comment and the line numbers are default text, faint and never bold.
+    let out = dump(&buf);
+    let y = out.lines().position(|l| l.contains("// note")).expect("the comment row") as u16;
+    let x = out.lines().nth(y as usize).unwrap().chars().position(|c| c == '/').unwrap() as u16;
+    for cell in [buf.cell((x, y)).unwrap(), buf.cell((x - 2, y)).unwrap()] {
+        assert_eq!(cell.fg, Color::Reset, "{cell:?}");
+        assert!(cell.modifier.contains(Modifier::DIM) && !cell.modifier.contains(Modifier::BOLD));
+    }
+}
+
+#[test]
+fn follow_terminal_marks_the_cursor_in_reverse_video_on_a_dark_terminal() {
+    use diff_reckoner::app::Tab;
+    use ratatui::style::{Color, Modifier};
+    let r = Repo::init();
+    r.write("hello.rs", "let a = 1;\n");
+    r.commit_all("init");
+    r.write("hello.rs", "let a = 2;\n");
+    let mut app = app_on(&r);
+    // Tests read the terminal as dark, where no ANSI gray is reliably off the background.
+    app.set_cli_theme(Some("terminal".to_string()));
+    enter_tab(&mut app, Tab::Changes);
+    app.focus = Focus::Diff;
+    let buf = render_buffer(&app);
+    assert!(buf.content.iter().all(|c| c.bg != diff_reckoner::theme::INVERSE));
+    // The focused cursor row is one reversed bar of plain default text.
+    let out = dump(&buf);
+    let y = out.lines().position(|l| l.contains("let a = 1;")).expect("the cursor row") as u16;
+    let x = out.lines().nth(y as usize).unwrap().chars().position(|c| c == 'l').unwrap() as u16;
+    for cell in [buf.cell((x, y)).unwrap(), buf.cell((x + 4, y)).unwrap()] {
+        assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset), "{cell:?}");
+        assert!(cell.modifier.contains(Modifier::REVERSED), "{cell:?}");
+    }
+    // The unfocused file-list cursor takes the soft fill, not bright black.
+    let files_row = out.lines().position(|l| l.contains("M hello.rs")).unwrap() as u16;
+    let files_x =
+        out.lines().nth(files_row as usize).unwrap().chars().position(|c| c == 'M').unwrap();
+    assert_eq!(buf.cell((files_x as u16 + 2, files_row)).unwrap().bg, Color::Black);
+}
+
+#[test]
+fn follow_terminal_bars_take_no_fill_on_a_dark_terminal() {
+    use diff_reckoner::app::Tab;
+    use ratatui::style::{Color, Modifier};
+    let r = Repo::init();
+    let body = (1..=40).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n") + "\n";
+    r.write("hello.rs", &body);
+    r.commit_all("init");
+    r.write("hello.rs", &body.replace("line 40\n", "LINE 40\n"));
+    let mut app = app_on(&r);
+    app.set_cli_theme(Some("terminal".to_string()));
+    enter_tab(&mut app, Tab::Changes);
+    // The cursor rests on the change, off the fold.
+    app.diff_cursor = app.visible.len() - 1;
+    let buf = render_buffer(&app);
+    // The tab bar and the footer sit on the terminal's own background.
+    for y in [0, 39] {
+        assert!((0..140).all(|x| buf.cell((x, y)).unwrap().bg == Color::Reset), "row {y}");
+    }
+    // A resting fold is faint text with a faint rule, never a black band.
+    let out = dump(&buf);
+    let y = out.lines().position(|l| l.contains("unmodified lines")).expect("a fold") as u16;
+    let row = out.lines().nth(y as usize).unwrap();
+    assert!(row.contains("unmodified lines ─"), "{row}");
+    let x = row.chars().position(|c| c == 'u').unwrap() as u16;
+    let cell = buf.cell((x, y)).unwrap();
+    assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset), "{cell:?}");
+    assert!(cell.modifier.contains(Modifier::DIM) && !cell.modifier.contains(Modifier::BOLD));
 }

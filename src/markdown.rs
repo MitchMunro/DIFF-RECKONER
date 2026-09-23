@@ -816,7 +816,7 @@ impl Renderer<'_> {
             self.block_src = block_start + i;
             let fragments: Vec<(String, Style)> = line
                 .into_iter()
-                .map(|s| (sanitize(&s.text), Style::default().fg(crate::ui::rgb(s.color))))
+                .map(|s| (sanitize(&s.text), Style::default().fg(s.color)))
                 .collect();
             self.emit_fragments(fragments, CODE_INDENT);
         }

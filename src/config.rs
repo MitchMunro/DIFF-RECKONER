@@ -310,6 +310,21 @@ pub fn save_theme(
     appearance: crate::theme::Appearance,
     name: &str,
 ) -> std::io::Result<()> {
+    let key = match appearance {
+        crate::theme::Appearance::Dark => "dark_theme",
+        crate::theme::Appearance::Light => "light_theme",
+    };
+    edit_config(dir, |text| with_top_level_key(text, key, name, Some("theme")))
+}
+
+/// Save the `terminal` theme: pin `theme = "terminal"` in `<dir>/config.toml`. The
+/// `dark_theme`/`light_theme` pair stays for when the pin is dropped.
+pub fn save_follow_terminal(dir: &Path) -> std::io::Result<()> {
+    edit_config(dir, |text| with_top_level_key(text, "theme", crate::theme::TERMINAL, None))
+}
+
+/// Rewrite `<dir>/config.toml` through `edit`, creating the directory and file if missing.
+fn edit_config(dir: &Path, edit: impl FnOnce(&str) -> String) -> std::io::Result<()> {
     let path = dir.join("config.toml");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -317,17 +332,13 @@ pub fn save_theme(
         Err(e) => return Err(e),
     };
     std::fs::create_dir_all(dir)?;
-    std::fs::write(&path, with_saved_theme(&text, appearance, name))
+    std::fs::write(&path, edit(&text))
 }
 
-/// `text` with the `appearance` theme key set to `name` and any `theme` pin removed — top-level
-/// keys only; a table's same-named keys are someone else's.
-fn with_saved_theme(text: &str, appearance: crate::theme::Appearance, name: &str) -> String {
-    let key = match appearance {
-        crate::theme::Appearance::Dark => "dark_theme",
-        crate::theme::Appearance::Light => "light_theme",
-    };
-    let entry = format!("{key} = \"{name}\"");
+/// `text` with top-level `key` set to `value` and top-level `drop` removed — a table's
+/// same-named keys are someone else's. Every other line is kept as written.
+fn with_top_level_key(text: &str, key: &str, value: &str, drop: Option<&str>) -> String {
+    let entry = format!("{key} = \"{value}\"");
     let mut out = Vec::new();
     let mut top_level = true;
     let mut written = false;
@@ -335,7 +346,7 @@ fn with_saved_theme(text: &str, appearance: crate::theme::Appearance, name: &str
         let trimmed = line.trim_start();
         top_level &= !trimmed.starts_with('[');
         let line_key = trimmed.split_once('=').map(|(k, _)| k.trim());
-        if top_level && line_key == Some("theme") {
+        if top_level && line_key.is_some() && line_key == drop {
             continue;
         }
         if top_level && line_key == Some(key) {
@@ -1039,6 +1050,24 @@ mod tests {
         assert_eq!(config.theme(), "auto");
         assert_eq!(config.theme_for(Appearance::Dark), "cobalt2");
         assert_eq!(config.theme_for(Appearance::Light), "dayfox");
+    }
+
+    #[test]
+    fn following_the_terminal_pins_it_and_a_side_save_unpins_it() {
+        use crate::theme::Appearance;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "dark_theme = \"nord\"\n").unwrap();
+        super::save_follow_terminal(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "theme = \"terminal\"\ndark_theme = \"nord\"\n"
+        );
+        let config = super::plugin_config_in(dir.path()).unwrap();
+        assert_eq!((config.theme(), config.active_theme()), ("terminal", "terminal"));
+
+        super::save_theme(dir.path(), Appearance::Dark, "dracula").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "dark_theme = \"dracula\"\n");
     }
 
     #[test]
