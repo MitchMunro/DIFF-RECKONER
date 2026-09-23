@@ -32,6 +32,30 @@ Requires git on `PATH`, a truecolor terminal, macOS or Linux.
 | `Branch` | vs merge-base with the base branch |
 | `Commits` | a picked contiguous run, `A^`..`B` |
 
+## Themes
+
+The theme paints the whole window, background included. The terminal's background is detected
+at startup, and the dark or light theme follows it.
+Press `t` to pick them: the dark themes on the left, the light on the right. `↑`/`↓` move and
+`←`/`→` switch sides, previewing each theme as you go; `enter` saves the highlighted theme
+(✓) for its side; `t` or `esc` closes and returns to the saved theme.
+
+The picker writes `config.toml` in `$DIFF_RECKONER_CONFIG_DIR`, else
+`$XDG_CONFIG_HOME/diff-reckoner` (`~/.config/diff-reckoner`). You can also edit it by hand;
+the names are the built-in list (`CATALOG` in `src/theme.rs`):
+
+```toml
+dark_theme = "cobalt2"        # default: catppuccin
+light_theme = "xcode-light"   # default: catppuccin-latte
+# theme = "nord"              # pin one theme regardless of background
+```
+
+`--theme <name>` overrides both for one run.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE) — the copyright notice is Dmitry Persiyanov's and stays.
+
+Theme palettes ported from terminal color schemes come from
+[iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) (MIT); each theme's
+copyright stays with its author.

@@ -66,8 +66,10 @@ impl Config {
     }
 }
 
-const PLUGIN_CONFIG_KEYS: [&str; 8] = [
+const PLUGIN_CONFIG_KEYS: [&str; 10] = [
     "theme",
+    "dark_theme",
+    "light_theme",
     "default_scope",
     "navigator_position",
     "toggle_placement",
@@ -155,6 +157,10 @@ impl ToggleDirection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginConfig {
     theme: String,
+    /// The theme `auto` uses on a dark terminal.
+    dark_theme: String,
+    /// The theme `auto` uses on a light terminal.
+    light_theme: String,
     default_scope: crate::model::Scope,
     navigator_position: NavigatorPosition,
     toggle_placement: TogglePlacement,
@@ -168,6 +174,8 @@ impl Default for PluginConfig {
     fn default() -> Self {
         Self {
             theme: crate::theme::DEFAULT.to_owned(),
+            dark_theme: crate::theme::DEFAULT_DARK.to_owned(),
+            light_theme: crate::theme::DEFAULT_LIGHT.to_owned(),
             default_scope: crate::model::Scope::Uncommitted,
             navigator_position: NavigatorPosition::Right,
             toggle_placement: TogglePlacement::Split,
@@ -182,6 +190,24 @@ impl Default for PluginConfig {
 impl PluginConfig {
     pub fn theme(&self) -> &str {
         &self.theme
+    }
+
+    /// The theme `auto` picks for `appearance`.
+    pub fn theme_for(&self, appearance: crate::theme::Appearance) -> &str {
+        match appearance {
+            crate::theme::Appearance::Dark => &self.dark_theme,
+            crate::theme::Appearance::Light => &self.light_theme,
+        }
+    }
+
+    /// The theme this snapshot paints with on this terminal: `theme`, or for `auto` the
+    /// `dark_theme`/`light_theme` matching the detected background.
+    pub fn active_theme(&self) -> &str {
+        if self.theme == crate::theme::DEFAULT {
+            self.theme_for(crate::theme::detected())
+        } else {
+            &self.theme
+        }
     }
 
     /// The scope a fresh pane is built with — startup and config recovery. A reread never
@@ -229,6 +255,8 @@ impl PluginConfig {
             .collect();
         serde_json::json!({
             "theme": self.theme,
+            "dark_theme": self.dark_theme,
+            "light_theme": self.light_theme,
             "default_scope": self.default_scope.name(),
             "navigator_position": self.navigator_position.as_str(),
             "toggle_placement": self.toggle_placement.as_str(),
@@ -263,9 +291,69 @@ impl fmt::Display for PluginConfigError {
 impl std::error::Error for PluginConfigError {}
 
 /// The config directory, resolved once at startup: `$DIFF_RECKONER_CONFIG_DIR` when set,
-/// else the directory `cli` reports — and none reads no config file.
+/// else the directory `cli` reports, else `$XDG_CONFIG_HOME/diff-reckoner` (`~/.config` when
+/// unset) — and none (no home) reads no config file.
 pub fn resolve_config_dir(cli: impl FnOnce() -> Option<String>) -> Option<PathBuf> {
-    config_dir_from(std::env::var_os("DIFF_RECKONER_CONFIG_DIR"), cli)
+    config_dir_from(std::env::var_os("DIFF_RECKONER_CONFIG_DIR"), cli).or_else(|| {
+        let xdg =
+            std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|d| d.is_absolute());
+        Some(xdg.or_else(|| dirs::home_dir().map(|h| h.join(".config")))?.join("diff-reckoner"))
+    })
+}
+
+/// Save `name` as the theme `auto` uses on an `appearance` terminal: set `dark_theme` or
+/// `light_theme` in `<dir>/config.toml`, creating both if missing. A top-level `theme` pin is
+/// dropped, since it would override the pair and the save would never paint. Every other
+/// line is kept as written.
+pub fn save_theme(
+    dir: &Path,
+    appearance: crate::theme::Appearance,
+    name: &str,
+) -> std::io::Result<()> {
+    let path = dir.join("config.toml");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(&path, with_saved_theme(&text, appearance, name))
+}
+
+/// `text` with the `appearance` theme key set to `name` and any `theme` pin removed — top-level
+/// keys only; a table's same-named keys are someone else's.
+fn with_saved_theme(text: &str, appearance: crate::theme::Appearance, name: &str) -> String {
+    let key = match appearance {
+        crate::theme::Appearance::Dark => "dark_theme",
+        crate::theme::Appearance::Light => "light_theme",
+    };
+    let entry = format!("{key} = \"{name}\"");
+    let mut out = Vec::new();
+    let mut top_level = true;
+    let mut written = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        top_level &= !trimmed.starts_with('[');
+        let line_key = trimmed.split_once('=').map(|(k, _)| k.trim());
+        if top_level && line_key == Some("theme") {
+            continue;
+        }
+        if top_level && line_key == Some(key) {
+            if !written {
+                out.push(entry.clone());
+                written = true;
+            }
+            continue;
+        }
+        out.push(line.to_owned());
+    }
+    if !written {
+        // The head of the file is always top level, ahead of any table.
+        out.insert(0, entry);
+    }
+    let mut joined = out.join("\n");
+    joined.push('\n');
+    joined
 }
 
 /// The resolution rule behind [`resolve_config_dir`], split out so tests can inject both
@@ -319,6 +407,19 @@ fn parse_plugin_config(path: &Path) -> Result<PluginConfig, PluginConfigError> {
             ));
         }
         theme.clone_into(&mut config.theme);
+    }
+    for (key, slot) in
+        [("dark_theme", &mut config.dark_theme), ("light_theme", &mut config.light_theme)]
+    {
+        let Some(value) = table.get(key) else { continue };
+        let theme = string_value(path, key, value, "a built-in theme name")?;
+        if !crate::theme::is_builtin(theme) {
+            return Err(PluginConfigError::new(
+                path,
+                format!("invalid value for `{key}`: {theme:?}; expected a built-in theme name"),
+            ));
+        }
+        theme.clone_into(slot);
     }
     if let Some(value) = table.get("default_scope") {
         config.default_scope =
@@ -577,6 +678,27 @@ mod tests {
     }
 
     #[test]
+    fn auto_paints_the_configured_dark_or_light_theme() {
+        use crate::theme::Appearance;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "dark_theme = \"cobalt2\"\nlight_theme = \"xcode-light\"\n",
+        )
+        .unwrap();
+        let config = super::plugin_config_in(dir.path()).unwrap();
+        assert_eq!(config.theme(), "auto");
+        assert_eq!(config.theme_for(Appearance::Dark), "cobalt2");
+        assert_eq!(config.theme_for(Appearance::Light), "xcode-light");
+        // Unprobed reads as dark.
+        assert_eq!(config.active_theme(), "cobalt2");
+
+        let defaults = PluginConfig::default();
+        assert_eq!(defaults.theme_for(Appearance::Dark), "catppuccin");
+        assert_eq!(defaults.theme_for(Appearance::Light), "catppuccin-latte");
+    }
+
+    #[test]
     fn omitted_keys_keep_their_defaults() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), "theme = \"gruvbox\"\n").unwrap();
@@ -664,6 +786,9 @@ mod tests {
     fn every_invalid_value_fails_instead_of_falling_back() {
         let cases = [
             ("theme = \"unknown\"\n", "`theme`"),
+            ("dark_theme = \"unknown\"\n", "`dark_theme`"),
+            // `auto` names no theme of its own, so it cannot be one half of the pair.
+            ("light_theme = \"auto\"\n", "`light_theme`"),
             ("default_scope = \"weekly\"\n", "`default_scope`"),
             ("default_scope = \"last-turn\"\n", "`default_scope`"),
             // `commits` is never a start scope: the pane holds no pick yet.
@@ -892,5 +1017,38 @@ mod tests {
         );
         assert_eq!(keybindings["quit"], serde_json::json!(["q"]));
         assert_eq!(keybindings["copy"], serde_json::json!(["y", "Y"]));
+    }
+
+    #[test]
+    fn saving_a_theme_sets_its_key_drops_the_pin_and_keeps_the_rest() {
+        use crate::theme::Appearance;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# mine\ntheme = \"nord\"\ndark_theme = \"dracula\"\n\n[keybindings]\nquit = [\"q\"]\n",
+        )
+        .unwrap();
+        super::save_theme(dir.path(), Appearance::Dark, "cobalt2").unwrap();
+        super::save_theme(dir.path(), Appearance::Light, "dayfox").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "light_theme = \"dayfox\"\n# mine\ndark_theme = \"cobalt2\"\n\n[keybindings]\nquit = [\"q\"]\n"
+        );
+        let config = super::plugin_config_in(dir.path()).unwrap();
+        assert_eq!(config.theme(), "auto");
+        assert_eq!(config.theme_for(Appearance::Dark), "cobalt2");
+        assert_eq!(config.theme_for(Appearance::Light), "dayfox");
+    }
+
+    #[test]
+    fn saving_a_theme_creates_the_directory_and_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("diff-reckoner");
+        super::save_theme(&nested, crate::theme::Appearance::Light, "alabaster").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(nested.join("config.toml")).unwrap(),
+            "light_theme = \"alabaster\"\n"
+        );
     }
 }

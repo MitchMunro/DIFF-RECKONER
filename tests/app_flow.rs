@@ -2750,7 +2750,7 @@ fn theme_selection_swaps_the_palette_and_falls_back() {
     let repo = Repo::init();
     let mut app = App::new(repo.path_buf(), Scope::Uncommitted, None);
 
-    // The default theme is catppuccin (Mocha).
+    // The default theme is `auto`: catppuccin (Mocha) on a dark or unprobed terminal.
     assert_eq!(*app.palette(), theme::resolve(Some("catppuccin")).palette);
 
     // A --theme override (highest precedence) swaps the whole palette.
@@ -2760,6 +2760,54 @@ fn theme_selection_swaps_the_palette_and_falls_back() {
     // An unknown name falls back to the default — never a half-applied palette.
     app.set_cli_theme(Some("nope".to_string()));
     assert_eq!(*app.palette(), theme::resolve(Some("catppuccin")).palette);
+}
+
+#[test]
+fn the_theme_picker_previews_saves_per_side_and_reverts_on_close() {
+    use diff_reckoner::theme::{self, Appearance};
+    let repo = Repo::init();
+    let config_dir = tempfile::tempdir().unwrap();
+    let mut app = App::new(repo.path_buf(), Scope::Uncommitted, None);
+    app.set_config_dir(Some(config_dir.path().to_path_buf()));
+    let keymap = Keymap::default();
+    let painted = |app: &App, name| *app.palette() == theme::resolve(Some(name)).palette;
+
+    // `t` opens on the active theme's side; nothing previews until the highlight moves.
+    press(&mut app, &keymap, KeyCode::Char('t'));
+    assert_eq!(app.mode, Mode::ThemePick);
+    assert!(painted(&app, "catppuccin"));
+
+    // Up and down preview within a side; right and left switch sides, previewing there.
+    press(&mut app, &keymap, KeyCode::Down);
+    assert!(painted(&app, "dracula"));
+    press(&mut app, &keymap, KeyCode::Right);
+    assert!(painted(&app, "catppuccin-latte"), "the light side opens on its saved theme");
+    press(&mut app, &keymap, KeyCode::Down);
+    assert!(painted(&app, "solarized-light"));
+
+    // Enter saves the highlight as its side's theme and moves that side's check mark only.
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(app.saved_theme(Appearance::Light), "solarized-light");
+    assert_eq!(app.saved_theme(Appearance::Dark), "catppuccin");
+    assert_eq!(
+        std::fs::read_to_string(config_dir.path().join("config.toml")).unwrap(),
+        "light_theme = \"solarized-light\"\n"
+    );
+    press(&mut app, &keymap, KeyCode::Left);
+    assert!(painted(&app, "dracula"), "each side keeps its own highlight");
+
+    // Esc closes and drops the preview: the saved theme for this (dark) terminal paints.
+    press(&mut app, &keymap, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.theme_picker.is_none());
+    assert!(painted(&app, "catppuccin"));
+
+    // `t` closes it too.
+    press(&mut app, &keymap, KeyCode::Char('t'));
+    press(&mut app, &keymap, KeyCode::Down);
+    press(&mut app, &keymap, KeyCode::Char('t'));
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(painted(&app, "catppuccin"));
 }
 
 /// Dispatch one key through the event loop's dispatcher, under `keymap` as the frame keymap.

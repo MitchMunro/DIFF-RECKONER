@@ -26,6 +26,7 @@ pub enum Action {
     TabChanges,
     TabAllFiles,
     Wrap,
+    Theme,
     Preview,
     NavigatorPosition,
     NavigatorHide,
@@ -152,7 +153,7 @@ impl Key {
 
 /// Every action with its config name and default keys — the single source the default keymap,
 /// the name lookup, and the config error message are built from.
-const ACTIONS: [(Action, &str, &[Key]); 38] = [
+const ACTIONS: [(Action, &str, &[Key]); 39] = [
     (Action::Down, "down", &[Key::plain('j'), Key::named(KeyCode::Down)]),
     (Action::Up, "up", &[Key::plain('k'), Key::named(KeyCode::Up)]),
     (Action::NextHunk, "next-hunk", &[Key::plain(']')]),
@@ -173,6 +174,7 @@ const ACTIONS: [(Action, &str, &[Key]); 38] = [
     (Action::TabChanges, "tab-changes", &[Key::plain('1')]),
     (Action::TabAllFiles, "tab-all-files", &[Key::plain('2')]),
     (Action::Wrap, "wrap", &[Key::plain('w')]),
+    (Action::Theme, "theme", &[Key::plain('t')]),
     (Action::Preview, "preview", &[Key::plain('m')]),
     (Action::NavigatorPosition, "navigator-position", &[Key::plain('p')]),
     (Action::NavigatorHide, "navigator-hide", &[Key::plain('z')]),

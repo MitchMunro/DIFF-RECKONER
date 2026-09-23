@@ -227,6 +227,38 @@ impl BasePicker {
     }
 }
 
+/// The theme picker's state while it is open: which side (the dark list or the light) the
+/// highlight is on, and its row on each side. The check marks are the config snapshot's
+/// `dark_theme`/`light_theme`, not state of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThemePicker {
+    pub side: theme::Appearance,
+    pub dark_cursor: usize,
+    pub light_cursor: usize,
+}
+
+impl ThemePicker {
+    /// The highlighted row on `side`.
+    pub fn cursor(&self, side: theme::Appearance) -> usize {
+        match side {
+            theme::Appearance::Dark => self.dark_cursor,
+            theme::Appearance::Light => self.light_cursor,
+        }
+    }
+
+    fn cursor_mut(&mut self) -> &mut usize {
+        match self.side {
+            theme::Appearance::Dark => &mut self.dark_cursor,
+            theme::Appearance::Light => &mut self.light_cursor,
+        }
+    }
+
+    /// The theme under the highlight on the active side.
+    pub fn highlighted(&self) -> &'static str {
+        theme::names(self.side)[self.cursor(self.side)]
+    }
+}
+
 /// The commit picker's state while it is open. The rows
 /// refresh under a poll and reconcile by sha; the highlight and the anchor are the reviewer's
 /// own place state.
@@ -349,6 +381,9 @@ pub enum Mode {
     /// The in-file find band over the read pane. Its state lives in
     /// [`App::find`].
     Find,
+    /// Choosing the dark and light themes. Its state lives in [`App::theme_picker`]. Not
+    /// modal: the page behind it must rebuild under each preview.
+    ThemePick,
 }
 
 impl Mode {
@@ -551,6 +586,14 @@ pub enum FooterAction {
     /// Visible, it waits in the `go` band; hidden, it joins row 1.
     NavigatorHide,
     Wrap,
+    /// Open the theme picker.
+    Theme,
+    /// The theme picker's own bar: save the highlight, close, move up and down a side, and
+    /// switch sides.
+    SaveTheme,
+    CloseThemePicker,
+    MoveThemeRow,
+    ThemeSide,
     Scope,
     List,
     Copy,
@@ -746,6 +789,8 @@ pub struct App {
     pub list_cursor: usize,
     /// The base picker's rows, filter, and highlight while `Mode::BasePick` is open
     pub base_picker: Option<BasePicker>,
+    /// The theme picker's side and highlights while `Mode::ThemePick` is open.
+    pub theme_picker: Option<ThemePicker>,
     pub mode: Mode,
     pub input: String,
     /// The comment editor's caret: a char index into `input` (`0..=chars().count()`).
@@ -785,8 +830,13 @@ pub struct App {
     palette: Palette,
     /// The active theme's name, so re-resolving to the same theme is a no-op.
     theme_name: &'static str,
-    /// The `--theme` override name (highest precedence); `None` lets the config file decide.
+    /// The `--theme` override name; `None` lets the config file decide.
     cli_theme_name: Option<String>,
+    /// The theme picker's highlighted theme, painted while the picker is open (highest
+    /// precedence). Closing the picker drops it.
+    preview_theme: Option<&'static str>,
+    /// Where `config.toml` lives, so the theme picker can save to it. `None` saves nothing.
+    config_dir: Option<std::path::PathBuf>,
     /// The plugin is either ready with one validated snapshot or wholly blocked on its error.
     config: PluginConfigState,
     /// The last theme name requested, so re-resolving the same name skips work and logging.
@@ -890,6 +940,7 @@ impl App {
             store: CommentStore::new(),
             list_cursor: 0,
             base_picker: None,
+            theme_picker: None,
             mode: Mode::Normal,
             input: String::new(),
             caret: 0,
@@ -909,6 +960,8 @@ impl App {
             palette: theme.palette,
             theme_name: theme.name,
             cli_theme_name: None,
+            preview_theme: None,
+            config_dir: None,
             config: PluginConfigState::Ready(crate::config::PluginConfig::default()),
             requested_theme_name: None,
             cache: DiffCache::new(),
@@ -935,6 +988,92 @@ impl App {
             self.cache = DiffCache::new();
             self.markdown_cache.borrow_mut().clear();
             self.snippet_cache.borrow_mut().clear();
+        }
+    }
+
+    /// Set where the theme picker saves `config.toml`.
+    pub fn set_config_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.config_dir = dir;
+    }
+
+    /// The theme `auto` uses on an `appearance` terminal — the picker's check mark on that side.
+    pub fn saved_theme(&self, appearance: theme::Appearance) -> &str {
+        self.config_snapshot().theme_for(appearance)
+    }
+
+    /// Open the theme picker on the active theme's side, each side highlighting the active
+    /// theme when it is there and that side's saved theme otherwise. Nothing previews until
+    /// the highlight moves.
+    pub fn open_theme_picker(&mut self) {
+        let active = self.theme_name;
+        let row = |side| {
+            let names = theme::names(side);
+            let at = |name: &str| names.iter().position(|n| *n == name);
+            at(active).or_else(|| at(self.saved_theme(side))).unwrap_or(0)
+        };
+        self.theme_picker = Some(ThemePicker {
+            side: theme::appearance_of(active).unwrap_or_else(theme::detected),
+            dark_cursor: row(theme::Appearance::Dark),
+            light_cursor: row(theme::Appearance::Light),
+        });
+        self.mode = Mode::ThemePick;
+    }
+
+    /// Close the theme picker and drop its preview: the saved theme for this terminal paints
+    /// again.
+    pub fn close_theme_picker(&mut self) {
+        if self.mode == Mode::ThemePick {
+            self.mode = Mode::Normal;
+        }
+        self.theme_picker = None;
+        self.preview_theme = None;
+        self.refresh_theme();
+    }
+
+    /// Move the highlight up or down its side and preview the theme under it.
+    pub fn theme_picker_move(&mut self, delta: isize) {
+        let Some(tp) = self.theme_picker.as_mut() else { return };
+        let len = theme::names(tp.side).len();
+        let cursor = tp.cursor_mut();
+        *cursor = step(*cursor, delta, len);
+        self.preview_highlighted_theme();
+    }
+
+    /// Move the highlight to the other side's list and preview the theme under it there.
+    pub fn theme_picker_side(&mut self, side: theme::Appearance) {
+        let Some(tp) = self.theme_picker.as_mut() else { return };
+        if tp.side != side {
+            tp.side = side;
+            self.preview_highlighted_theme();
+        }
+    }
+
+    fn preview_highlighted_theme(&mut self) {
+        self.preview_theme = self.theme_picker.as_ref().map(ThemePicker::highlighted);
+        self.refresh_theme();
+    }
+
+    /// Save the highlighted theme as its side's `auto` theme in `config.toml`, and apply the
+    /// file it wrote so the check mark moves now. The save also retires a `--theme` override:
+    /// the reviewer just chose what should paint.
+    pub fn theme_picker_save(&mut self) {
+        let Some(tp) = &self.theme_picker else { return };
+        let (side, name) = (tp.side, tp.highlighted());
+        let Some(dir) = self.config_dir.clone() else {
+            self.status = "no config directory to save the theme to".into();
+            return;
+        };
+        if let Err(e) = crate::config::save_theme(&dir, side, name) {
+            self.status = format!("theme not saved: {e}");
+            return;
+        }
+        match crate::config::plugin_config_in(&dir) {
+            Ok(config) => {
+                self.cli_theme_name = None;
+                self.set_plugin_config(config);
+                self.status = format!("saved theme: {name}");
+            }
+            Err(e) => self.set_config_error(e.to_string()),
         }
     }
 
@@ -980,6 +1119,10 @@ impl App {
         // recovery restores the tab beneath them. The query is not restored.
         self.close_search();
         self.close_find();
+        // An open picker means the snapshot is still ready, so its revert can resolve.
+        if self.theme_picker.is_some() {
+            self.close_theme_picker();
+        }
         self.config = PluginConfigState::Blocked { error };
     }
 
@@ -1026,10 +1169,10 @@ impl App {
         self.world_request = old.world_request.take();
         let old_mode = old.mode.clone();
         match old_mode {
-            // `set_config_error` closes the search overlay, the find band, and the agent picker
-            // before the mode is stored, so none reaches recovery; the search query is not
-            // restored and the picker's frozen rows are not either.
-            Mode::Normal | Mode::Search | Mode::Find => {}
+            // `set_config_error` closes the search overlay, the find band, the theme picker, and
+            // the agent picker before the mode is stored, so none reaches recovery; the search
+            // query is not restored and the picker's frozen rows are not either.
+            Mode::Normal | Mode::Search | Mode::Find | Mode::ThemePick => {}
             Mode::List | Mode::Composing { .. } | Mode::BasePick | Mode::CommitPick => {
                 self.scope = old.scope;
                 self.tab = old.tab;
@@ -1092,13 +1235,22 @@ impl App {
         }
     }
 
-    /// Re-resolve the active theme from the CLI override or current validated snapshot.
+    /// Re-resolve the active theme from the picker's preview, the CLI override, or the current
+    /// validated snapshot.
     fn refresh_theme(&mut self) {
-        let name = self
-            .cli_theme_name
-            .clone()
-            .unwrap_or_else(|| self.config_snapshot().theme().to_owned());
+        let config = self.config_snapshot();
+        let name = match (self.preview_theme, self.cli_theme_name.as_deref()) {
+            (Some(preview), _) => preview.to_owned(),
+            (None, Some(theme::DEFAULT)) => config.theme_for(theme::detected()).to_owned(),
+            (None, Some(cli)) => cli.to_owned(),
+            (None, None) => config.active_theme().to_owned(),
+        };
         self.set_theme(Some(&name));
+    }
+
+    /// The name of the theme painting now.
+    pub fn active_theme(&self) -> &'static str {
+        self.theme_name
     }
 
     /// The active palette every renderer paints from.
@@ -2956,7 +3108,7 @@ impl App {
             Mode::Search => self.search.as_mut().map(|s| (&mut s.query, &mut s.caret)),
             Mode::Find => self.find.as_mut().map(|f| (&mut f.query, &mut f.caret)),
             Mode::BasePick => self.base_picker.as_mut().map(|b| (&mut b.query, &mut b.caret)),
-            Mode::Normal | Mode::List | Mode::CommitPick => None,
+            Mode::Normal | Mode::List | Mode::CommitPick | Mode::ThemePick => None,
         }
     }
 
@@ -3266,7 +3418,8 @@ impl App {
             | Mode::BasePick
             | Mode::CommitPick
             | Mode::Search
-            | Mode::Find => None,
+            | Mode::Find
+            | Mode::ThemePick => None,
         }
     }
 
@@ -3816,6 +3969,14 @@ impl App {
                     vec![(A::CloseFind, Primary)]
                 };
             }
+            Mode::ThemePick => {
+                return vec![
+                    (A::SaveTheme, Primary),
+                    (A::CloseThemePicker, Do),
+                    (A::MoveThemeRow, Do),
+                    (A::ThemeSide, Do),
+                ];
+            }
             Mode::Normal => {}
         }
 
@@ -3936,6 +4097,7 @@ impl App {
             out.push((A::Find, Go));
         }
         out.push((A::Wrap, Go));
+        out.push((A::Theme, Go));
         if !self.store.is_empty() {
             out.push((A::List, Go));
             out.push((A::Copy, Go));

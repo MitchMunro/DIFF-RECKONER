@@ -1,21 +1,23 @@
 //! Syntax highlighting via `syntect`, themed by the active theme's paired syntax theme.
 //!
 //! The highlighter is rebuilt when the theme
-//! changes and produces per-line foreground spans; the pane keeps the terminal's own
-//! background, so only token colors come from the theme.
+//! changes and produces per-line foreground spans; the background is the palette's `base`,
+//! painted by the renderer.
 
 use std::fmt;
 use std::io::Cursor;
 
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme, ThemeSet};
+use syntect::highlighting::{
+    Color as SyntectColor, StyleModifier, Theme, ThemeItem, ThemeSet, ThemeSettings,
+};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
 use std::sync::OnceLock;
 
 use crate::diff::{Rgb, Span};
-use crate::theme::SyntaxChoice;
+use crate::theme::{Palette, SyntaxChoice};
 
 /// The default text color when a theme carries none, or its syntax theme fails to load.
 const DEFAULT_FG: Rgb = (0xcd, 0xd6, 0xf4);
@@ -65,6 +67,7 @@ impl Highlighter {
                 }
             }
             SyntaxChoice::Embedded(name) => Some(embedded_themes().get(name).clone()),
+            SyntaxChoice::Derived(palette) => Some(derived_theme(&palette)),
         };
         let default_fg = theme
             .as_ref()
@@ -111,6 +114,53 @@ impl Highlighter {
     }
 }
 
+/// A syntax theme built from a palette, for a theme with none of its own: each token role takes
+/// one accent, lifted to stay legible on the palette's base. Unlisted scopes (operators,
+/// punctuation, plain identifiers) keep the palette's text color.
+fn derived_theme(p: &Palette) -> Theme {
+    let roles = [
+        ("comment, punctuation.definition.comment, markup.quote", p.dim1),
+        ("keyword, storage, keyword.control", p.purple),
+        ("string, markup.raw, markup.inline.raw, markup.inserted", p.green),
+        ("constant.numeric, constant.language, constant.character, constant.other", p.orange),
+        ("entity.name.function, support.function, markup.heading, entity.name.section", p.blue),
+        ("markup.underline.link, string.other.link", p.blue),
+        (
+            "entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, \
+             support.type, support.class, entity.other.attribute-name, markup.changed",
+            p.yellow,
+        ),
+        ("entity.name.tag, variable.language, support.constant, markup.deleted, invalid", p.red),
+    ];
+    let scopes = roles
+        .into_iter()
+        .map(|(selector, color)| ThemeItem {
+            scope: selector.parse().expect("a static scope selector parses"),
+            style: StyleModifier {
+                foreground: Some(syntect_color(p.legible(color))),
+                background: None,
+                font_style: None,
+            },
+        })
+        .collect();
+    Theme {
+        settings: ThemeSettings {
+            foreground: Some(syntect_color(p.text)),
+            ..ThemeSettings::default()
+        },
+        scopes,
+        ..Theme::default()
+    }
+}
+
+/// A palette color as syntect's; palette colors are always RGB.
+fn syntect_color(color: ratatui::style::Color) -> SyntectColor {
+    match color {
+        ratatui::style::Color::Rgb(r, g, b) => SyntectColor { r, g, b, a: 0xff },
+        _ => SyntectColor::WHITE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Highlighter;
@@ -153,5 +203,19 @@ mod tests {
             let spans = h.highlight("let x = 1;\n", Some("rs"));
             assert!(spans[0].len() > 1, "{name}: bundled syntax theme failed to load");
         }
+    }
+
+    #[test]
+    fn derived_syntax_colors_tokens_from_the_palette() {
+        let t = theme::resolve(Some("xcode-light"));
+        assert!(matches!(t.syntax, theme::SyntaxChoice::Derived(_)));
+        let spans = Highlighter::new(t.syntax).highlight("let x = \"s\";\n", Some("rs"));
+        let color_of = |text: &str| spans[0].iter().find(|s| s.text.trim() == text).unwrap().color;
+        let rgb = |c| match c {
+            ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+            _ => unreachable!(),
+        };
+        assert_eq!(color_of("let"), rgb(t.palette.legible(t.palette.purple)));
+        assert_ne!(color_of("let"), color_of("x"), "keywords and identifiers differ");
     }
 }

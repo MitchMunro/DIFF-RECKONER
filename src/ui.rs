@@ -31,6 +31,26 @@ use crate::model::{ChangeKind, Comment};
 use crate::theme::Palette;
 
 pub fn render(frame: &mut Frame, app: &App) {
+    render_frame(frame, app);
+    paint_theme_defaults(frame, app);
+}
+
+/// Give every cell still on the terminal's default colors the theme's own: `base` behind,
+/// `text` in front, so the whole frame — gaps, popups under `Clear`, the config error —
+/// follows the theme rather than the terminal.
+fn paint_theme_defaults(frame: &mut Frame, app: &App) {
+    let p = app.palette();
+    for cell in &mut frame.buffer_mut().content {
+        if cell.bg == Color::Reset {
+            cell.bg = p.base;
+        }
+        if cell.fg == Color::Reset {
+            cell.fg = p.text;
+        }
+    }
+}
+
+fn render_frame(frame: &mut Frame, app: &App) {
     let area = frame.area();
     // Link hit-testing resolves against the painted frame; each frame repaints its own.
     app.clear_painted_frame();
@@ -71,11 +91,15 @@ pub fn render(frame: &mut Frame, app: &App) {
         Mode::List => Some(render_comments_list),
         Mode::BasePick => Some(render_base_picker),
         Mode::CommitPick => Some(render_commit_picker),
-        Mode::Normal | Mode::Composing { .. } | Mode::Search | Mode::Find => None,
+        Mode::Normal | Mode::Composing { .. } | Mode::Search | Mode::Find | Mode::ThemePick => None,
     };
     if let Some(render_popup) = popup {
         scrim_behind(frame, app, area);
         render_popup(frame, app, area);
+    }
+    // The theme picker is the one popup without a scrim: the page behind it is the preview.
+    if app.mode == Mode::ThemePick {
+        render_theme_picker(frame, app, area);
     }
 }
 
@@ -84,6 +108,8 @@ pub fn render(frame: &mut Frame, app: &App) {
 /// stays recognizable. The footer stays bright — while a modal is open it is the modal's own
 /// key bar, the one place advertising the live keys.
 fn scrim_behind(frame: &mut Frame, app: &App, area: Rect) {
+    // The defaults take the theme's colors first, so default text recedes with the rest.
+    paint_theme_defaults(frame, app);
     let p = *app.palette();
     let bands = panes(area, app);
     let buf = frame.buffer_mut();
@@ -2478,7 +2504,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         ),
         A::List => (hint(K::Comments), "comments"),
         A::Copy => (hint(K::Copy), "copy"),
-        A::Save => ("enter".into(), "save"),
+        A::Save | A::SaveTheme => ("enter".into(), "save"),
         A::Newline => ("shift+enter".into(), "newline"),
         A::Cancel | A::ClosePicker => ("esc".into(), "cancel"),
         A::CloseList | A::CloseSearch | A::CloseFind => ("esc".into(), "close"),
@@ -2511,9 +2537,12 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Search => (hint(K::Search), "search"),
         A::Find => (hint(K::Find), "find"),
         A::Wrap => (hint(K::Wrap), if app.wrap { "unwrap" } else { "wrap" }),
-        // The arrows move in the find band, the search screen, and the base picker, where
-        // every printable is query text.
-        A::FindStep | A::MoveBaseRow | A::PickResult => ("↑↓".into(), "move"),
+        A::Theme => (hint(K::Theme), "theme"),
+        A::CloseThemePicker => (format!("esc/{}", hint(K::Theme)), "close"),
+        A::ThemeSide => ("←→".into(), "dark/light"),
+        // The arrows move in the find band, the search screen, and the base and theme pickers,
+        // where no letter moves.
+        A::FindStep | A::MoveBaseRow | A::MoveThemeRow | A::PickResult => ("↑↓".into(), "move"),
         A::FlipSearchMode => {
             // The label names the destination mode: `code` from Files, `files` from Code.
             let to_code =
@@ -2582,6 +2611,8 @@ const STATUS_MIN: usize = 8;
 /// The ` …` a modal footer ends with when an action was trimmed off row 1. It stands in for the
 /// `?` a modal does not have, so it is the only promise that more keys exist.
 const MORE_ELLIPSIS: usize = 2;
+/// The `?` hint's label, shown beside it only in room nothing else on row 1 claims.
+const MORE_LABEL: &str = " shortcuts";
 
 /// The footer: row 1 (the primary, the cursor's actions, `send`, and a `?`), plus the wrapped
 /// `?`-expansion bands below when it is open. Row 1 trims trailing actions to fit; the primary,
@@ -2736,12 +2767,15 @@ fn footer_row1(app: &App, w: usize) -> (Vec<Span<'static>>, Vec<FooterAction>) {
         }
     }
 
-    // The `?` sits at the right, muted but legible, always present in `Normal` mode. A modal footer
+    // The `?` sits at the right, muted but legible, labeled when there is room, always present in `Normal` mode. A modal footer
     // has no `?` to promise more, so a trailing `…` marks any action trimmed to fit instead.
     if show_more {
-        let pad = w.saturating_sub(used + 1);
+        // The label is the first thing to yield: it takes only room left over.
+        let hint =
+            if used + 1 + MORE_LABEL.width() < w { format!("?{MORE_LABEL}") } else { "?".into() };
+        let pad = w.saturating_sub(used + hint.width());
         spans.push(Span::raw(" ".repeat(pad)));
-        spans.push(Span::styled("?", Style::default().fg(p.dim0)));
+        spans.push(Span::styled(hint, Style::default().fg(p.dim0)));
     } else if !overflow.is_empty() {
         spans.push(Span::styled(" …", Style::default().fg(p.dim2)));
     }
@@ -3071,6 +3105,80 @@ pub fn hit_base_picker_row(area: Rect, app: &App, col: u16, row: u16) -> Option<
     let inner = picker_inner(base_picker_popup(area, app, now_unix()));
     let first = base_picker_scroll(bp, inner.height.saturating_sub(1) as usize);
     menu_hit(inner, 1, first, bp.visible().len(), col, row)
+}
+
+// --- Theme picker --------------------------------------------
+
+/// A theme row's lead before the name: a space, then the check mark or its blank.
+const THEME_ROW_LEAD: usize = 3;
+
+/// The theme picker: the dark list and the light list side by side, each under its header.
+/// The active side's highlight takes the selection fill; each side checks its saved theme.
+fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
+    use crate::theme::{self, Appearance};
+    let Some(tp) = &app.theme_picker else { return };
+    let p = app.palette();
+    let widest_name = theme::CATALOG.iter().map(|(n, _)| n.width()).max().unwrap_or(0);
+    // The lead, the name, one column of air.
+    let col_w = THEME_ROW_LEAD + widest_name + 1;
+    let rows = theme::names(Appearance::Dark).len().max(theme::names(Appearance::Light).len());
+    // Both columns and the rule between them; the header row and both borders.
+    let popup = menu_popup(area, app, 2 * col_w + 1, "theme", rows + 3);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(p.purple))
+        .title(framed_title("theme"));
+    let inner = picker_inner(popup);
+    frame.render_widget(block, popup);
+    if inner.height == 0 {
+        return;
+    }
+    let [left, rule, right] = Layout::horizontal([
+        Constraint::Length(col_w as u16),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
+    let bar =
+        vec![Line::from(Span::styled("│", Style::default().fg(p.dim2))); rule.height as usize];
+    frame.render_widget(Paragraph::new(bar), rule);
+
+    for (side, column, label) in
+        [(Appearance::Dark, left, "dark"), (Appearance::Light, right, "light")]
+    {
+        let active = tp.side == side;
+        let header_style = if active {
+            Style::default().fg(p.purple).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.dim2)
+        };
+        let header = Line::from(Span::styled(format!(" {label}"), header_style));
+        frame.render_widget(Paragraph::new(header), Rect { height: 1, ..column });
+
+        let list_area = Rect { y: column.y + 1, height: column.height.saturating_sub(1), ..column };
+        let names = theme::names(side);
+        let saved = app.saved_theme(side);
+        let cursor = tp.cursor(side);
+        let first = menu_scroll(cursor, names.len(), list_area.height as usize);
+        let width = list_area.width as usize;
+        let items: Vec<ListItem> = names
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(list_area.height as usize)
+            .map(|(i, &name)| {
+                let mark = if name == saved {
+                    Span::styled(" ✓ ", Style::default().fg(p.green))
+                } else {
+                    Span::raw("   ")
+                };
+                let spans = vec![mark, Span::styled(name, text_style(p))];
+                selectable_row(p, spans, width, (active && i == cursor).then_some(p.surface2))
+            })
+            .collect();
+        frame.render_widget(List::new(items), list_area);
+    }
 }
 
 // --- Commit picker -------------------------------------------

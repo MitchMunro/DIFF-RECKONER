@@ -140,7 +140,7 @@ fn backspacing_a_wide_character_leaves_the_terminal_cursor_unpainted() {
         "the cursor retreats one wide character"
     );
     let cell = terminal.backend().buffer().cell(cursor).unwrap();
-    assert_eq!(cell.bg, ratatui::style::Color::Reset);
+    assert_eq!(cell.bg, app.palette().base, "an empty cell, on the theme's background");
     assert_eq!(cell.symbol(), " ");
 }
 
@@ -633,6 +633,12 @@ fn the_footer_shows_the_action_for_the_context() {
     assert!(!footer.contains("changed"), "the changed count is not in the footer:\n{footer}");
 }
 
+/// Whether a footer row closes with the `?` hint, labeled or bare.
+fn ends_with_hint(row: &str) -> bool {
+    let row = row.trim_end();
+    row.ends_with("? shortcuts") || row.ends_with('?')
+}
+
 #[test]
 fn the_footer_trims_trailing_actions_to_fit_keeping_the_primary_and_the_more_hint() {
     let mut app = edited_app();
@@ -640,20 +646,21 @@ fn the_footer_trims_trailing_actions_to_fit_keeping_the_primary_and_the_more_hin
     // Wide: every cursor action fits, and the `?` closes the row.
     let wide = footer_line(&render_at(&app, 120));
     assert!(
-        wide.contains("c comment") && wide.contains("v select") && wide.trim_end().ends_with('?'),
+        wide.contains("c comment") && wide.contains("v select") && ends_with_hint(&wide),
         "wide footer shows all actions and the `?`:\n{wide}"
     );
+    assert!(wide.trim_end().ends_with("? shortcuts"), "with room, the `?` is labeled:\n{wide}");
     // Narrow: the primary survives, the trailing action drops, and the `?` stays at the right.
     let narrow = footer_line(&render_at(&app, 18));
     assert!(narrow.contains("c comment"), "the primary action is never dropped:\n{narrow}");
-    assert!(narrow.trim_end().ends_with('?'), "the `?` never drops:\n{narrow}");
+    assert!(ends_with_hint(&narrow), "the `?` never drops:\n{narrow}");
     assert!(!narrow.contains("v select"), "the trailing action is trimmed off row 1:\n{narrow}");
     // Too narrow for the primary and the `?` together: the primary sheds its label to its key, and
     // the `?` still survives at the right.
     let tiny = footer_line(&render_at(&app, 11));
     assert!(tiny.contains(" c "), "the primary keeps its key:\n{tiny}");
     assert!(!tiny.contains("comment"), "the primary sheds its label:\n{tiny}");
-    assert!(tiny.trim_end().ends_with('?'), "the `?` still survives:\n{tiny}");
+    assert!(ends_with_hint(&tiny), "the `?` still survives:\n{tiny}");
 }
 
 #[test]
@@ -669,7 +676,7 @@ fn a_narrow_row_keeps_send_and_the_more_hint_by_shedding_the_primary_label() {
     // the primary's label — `send` and the `?` must never clip off the right edge.
     let narrow = footer_line(&render_at(&app, 16));
     assert!(narrow.contains("y copy"), "copy never drops:\n{narrow}");
-    assert!(narrow.trim_end().ends_with('?'), "the `?` never drops:\n{narrow}");
+    assert!(ends_with_hint(&narrow), "the `?` never drops:\n{narrow}");
     assert!(narrow.chars().count() <= 16, "the row never overflows its width:\n{narrow}");
 }
 
@@ -688,7 +695,7 @@ fn the_footer_shows_the_sends_outcome_at_a_pane_width_by_yielding_the_cursor_act
     let narrow = footer_line(&render_at(&app, 40));
     assert!(narrow.contains("no agent here"), "the refusal shows at 40 columns:\n{narrow}");
     assert!(narrow.contains("y copy"), "copy never drops:\n{narrow}");
-    assert!(narrow.trim_end().ends_with('?'), "the `?` never drops:\n{narrow}");
+    assert!(ends_with_hint(&narrow), "the `?` never drops:\n{narrow}");
     assert!(!narrow.contains("d delete"), "the cursor's actions yield to the status:\n{narrow}");
 
     // With room for both, nothing yields.
@@ -709,7 +716,7 @@ fn the_footer_shows_the_sends_outcome_at_a_pane_width_by_yielding_the_cursor_act
     // no status in play at all.
     for w in 14..=140u16 {
         let row = footer_line(&render_at(&app, w));
-        assert!(row.trim_end().ends_with('?'), "the `?` left the row at width {w}:\n{row}");
+        assert!(ends_with_hint(&row), "the `?` left the row at width {w}:\n{row}");
     }
 
     // `s` is also the comments list's primary, so a refusal has to reach the reviewer there too.
@@ -742,7 +749,7 @@ fn the_expansion_aligns_row_one_into_the_labeled_grid() {
 
     // Row 1 is now the `do` band: the primary, and the `?` still at the right.
     assert!(
-        do_line.contains("c comment") && do_line.trim_end().ends_with('?'),
+        do_line.contains("c comment") && ends_with_hint(&do_line),
         "row 1 is the `do` line with the primary and `?`:\n{do_line}"
     );
     assert!(go_line.contains("scope"), "the go band lists the always-there keys:\n{go_line}");
@@ -789,7 +796,7 @@ fn the_expanded_row_one_never_drops_send_or_the_more_hint_on_a_narrow_pane() {
         let row1 = out.lines().find(|l| l.contains("y copy")).expect("row 1 carries copy");
         let row1 = row1.trim_end();
         assert!(row1.contains("y copy"), "copy survives at w={w}: [{row1}]");
-        assert!(row1.ends_with('?'), "the `?` survives at w={w}: [{row1}]");
+        assert!(ends_with_hint(row1), "the `?` survives at w={w}: [{row1}]");
         assert!(row1.chars().count() <= w as usize, "row 1 never overflows at w={w}: [{row1}]");
     }
 }
@@ -1142,10 +1149,7 @@ fn all_files_tab_bar_footer_and_count_read_for_the_tab() {
         "the changed count stays in the header on All files:\n{out}"
     );
     let footer = footer_line(&out);
-    assert!(
-        footer.trim_end().ends_with('?'),
-        "the collapsed footer closes with the `?`:\n{footer}"
-    );
+    assert!(ends_with_hint(&footer), "the collapsed footer closes with the `?`:\n{footer}");
     assert!(
         !footer.contains("changed"),
         "the changed count is not repeated in the footer:\n{footer}"
@@ -1184,6 +1188,46 @@ fn renders_a_light_theme_without_panic() {
         .flat_map(|y| (0..140).map(move |x| (x, y)))
         .any(|(x, y)| buf.cell((x, y)).is_some_and(|c| c.fg == latte_blue));
     assert!(painted, "the Latte palette reaches the painted buffer");
+}
+
+#[test]
+fn every_cell_paints_on_the_theme_not_the_terminal_default() {
+    use ratatui::style::Color;
+    let mut app = edited_app();
+    app.set_cli_theme(Some("solarized-light".to_string()));
+    // The page alone, and under a popup whose `Clear` resets its cells.
+    for open in [false, true] {
+        if open {
+            app.open_theme_picker();
+        }
+        let buf = render_buffer(&app);
+        let base = app.palette().base;
+        assert!(buf.content.iter().all(|c| c.bg != Color::Reset && c.fg != Color::Reset));
+        assert!(buf.content.iter().filter(|c| c.bg == base).count() > 1000, "mostly base");
+    }
+}
+
+#[test]
+fn the_theme_picker_lists_both_sides_and_checks_each_saved_theme() {
+    let mut app = edited_app();
+    let closed = render_buffer(&app);
+    app.open_theme_picker();
+    let out = render(&app);
+    let header = out.lines().find(|l| l.contains(" dark") && l.contains(" light"));
+    assert!(header.is_some(), "the dark and light lists sit side by side:\n{out}");
+    let row = out.lines().find(|l| l.contains("catppuccin ")).expect("the first row");
+    assert!(row.contains("✓ catppuccin ") && row.contains("✓ catppuccin-latte"), "{row}");
+    assert!(out.contains("iceberg-light") && out.contains("tomorrow-night"), "every theme lists");
+    // No scrim: the page beside the popup is the preview, painted exactly as with it closed.
+    let buf = render_buffer(&app);
+    assert_eq!(buf.cell((0, 1)), closed.cell((0, 1)));
+    // The active side's highlight takes the selection fill.
+    let (x, y) = out
+        .lines()
+        .enumerate()
+        .find_map(|(y, l)| l.find("✓ catppuccin ").map(|b| (l[..b].chars().count(), y)))
+        .unwrap();
+    assert_eq!(buf.cell((x as u16 + 2, y as u16)).unwrap().bg, SELECTION_BG);
 }
 
 /// An `edited_app` running under `[keybindings]` from a real config file.

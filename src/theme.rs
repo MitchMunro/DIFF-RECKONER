@@ -4,17 +4,72 @@
 //! every other slot is derived from the anchors. One theme — `catppuccin` — instead
 //! pins its whole palette as a literal, to stay byte-identical to the pre-theming
 //! colors. One selection sets both the chrome `Palette` and the syntax theme, so they
-//! never desync. The pane background stays the terminal's, so only these fills and the
-//! syntax foregrounds are painted.
+//! never desync. The whole frame paints on the theme's `base`, not the terminal's background.
 
 // This file is a color table; 6-digit `0xRRGGBB` literals read better grouped as one value.
 #![allow(clippy::unreadable_literal)]
 
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use ratatui::style::Color;
 use two_face::theme::EmbeddedThemeName;
 
-/// The default theme name; the fallback for an unset CLI value.
-pub const DEFAULT: &str = "catppuccin";
+/// The default theme name; the fallback for an unset CLI value. `auto` follows the
+/// terminal: Catppuccin Mocha on a dark background, Latte on a light one.
+pub const DEFAULT: &str = "auto";
+
+/// The themes `auto` picks when the config names none.
+pub const DEFAULT_DARK: &str = "catppuccin";
+pub const DEFAULT_LIGHT: &str = "catppuccin-latte";
+
+/// The terminal background's appearance, probed once at startup by [`detect_appearance`].
+/// Unset (tests, a failed probe) reads as dark.
+static DETECTED: OnceLock<Appearance> = OnceLock::new();
+
+/// Every built-in theme and its appearance: twenty dark, then twenty light.
+pub const CATALOG: &[(&str, Appearance)] = &[
+    ("catppuccin", Appearance::Dark),
+    ("dracula", Appearance::Dark),
+    ("one-dark", Appearance::Dark),
+    ("nord", Appearance::Dark),
+    ("gruvbox", Appearance::Dark),
+    ("tokyo-night", Appearance::Dark),
+    ("monokai", Appearance::Dark),
+    ("solarized", Appearance::Dark),
+    ("github-dark", Appearance::Dark),
+    ("rose-pine", Appearance::Dark),
+    ("night-owl", Appearance::Dark),
+    ("material-darker", Appearance::Dark),
+    ("ayu-dark", Appearance::Dark),
+    ("everforest-dark", Appearance::Dark),
+    ("kanagawa", Appearance::Dark),
+    ("vscode-dark", Appearance::Dark),
+    ("xcode-dark", Appearance::Dark),
+    ("cobalt2", Appearance::Dark),
+    ("ciapre", Appearance::Dark),
+    ("tomorrow-night", Appearance::Dark),
+    ("catppuccin-latte", Appearance::Light),
+    ("solarized-light", Appearance::Light),
+    ("github-light", Appearance::Light),
+    ("xcode-light", Appearance::Light),
+    ("one-light", Appearance::Light),
+    ("gruvbox-light", Appearance::Light),
+    ("tokyo-night-day", Appearance::Light),
+    ("rose-pine-dawn", Appearance::Light),
+    ("ayu-light", Appearance::Light),
+    ("everforest-light", Appearance::Light),
+    ("light-owl", Appearance::Light),
+    ("tomorrow", Appearance::Light),
+    ("kanagawa-lotus", Appearance::Light),
+    ("alabaster", Appearance::Light),
+    ("bluloco-light", Appearance::Light),
+    ("selenized-light", Appearance::Light),
+    ("flexoki-light", Appearance::Light),
+    ("dayfox", Appearance::Light),
+    ("terminal-basic", Appearance::Light),
+    ("iceberg-light", Appearance::Light),
+];
 
 /// A theme's intrinsic cast, which sets the derivation direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,12 +79,14 @@ pub enum Appearance {
 }
 
 /// The syntax theme paired with a palette: a bundled `.tmTheme`'s vendored bytes (for themes
-/// `two-face` lacks, and for Catppuccin Mocha kept byte-identical to today's), or a theme
-/// from the `two-face` embedded set.
+/// `two-face` lacks, and for Catppuccin Mocha kept byte-identical to today's), a theme from
+/// the `two-face` embedded set, or token colors derived from the palette.
 #[derive(Clone, Copy, Debug)]
 pub enum SyntaxChoice {
     Bundled(&'static [u8]),
     Embedded(EmbeddedThemeName),
+    /// Token colors derived from the theme's own palette, for a theme with no syntax theme.
+    Derived(Palette),
 }
 
 /// A resolved theme: its name, the chrome `Palette`, and its paired syntax theme.
@@ -43,8 +100,8 @@ pub struct Theme {
 /// The resolved colors every UI element paints — one source for chrome and diff fills.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
-    /// The theme's background anchor. Nothing paints it directly — the terminal supplies the
-    /// real background — but the modal scrim blends receding cells toward it.
+    /// The theme's background: every cell without a fill of its own paints on it, and the
+    /// modal scrim blends receding cells toward it.
     pub base: Color,
     pub surface0: Color,
     pub surface1: Color,
@@ -97,16 +154,40 @@ impl Palette {
             other => other,
         }
     }
+
+    /// Step `color` toward `text` until it reads on `base` at [`MIN_TOKEN_CONTRAST`], so a pale
+    /// accent (an ANSI yellow on a light background) stays legible as a token color.
+    pub fn legible(&self, color: Color) -> Color {
+        (0..=10)
+            .map(|step| blend(color, self.text, f64::from(step) / 10.0))
+            .find(|c| contrast(*c, self.base) >= MIN_TOKEN_CONTRAST)
+            .unwrap_or(self.text)
+    }
 }
 
-/// Resolve a theme name to a `Theme`. `None`, an unknown name, or a not-yet-supported
-/// one (including `terminal`) falls back to the default and logs; never a half-palette.
+/// The terminal appearance [`detect_appearance`] recorded; dark when it has not run.
+pub fn detected() -> Appearance {
+    DETECTED.get().copied().unwrap_or(Appearance::Dark)
+}
+
+/// Resolve a theme name to a `Theme` for the detected terminal appearance.
 pub fn resolve(name: Option<&str>) -> Theme {
+    resolve_for(name, detected())
+}
+
+/// Resolve a theme name to a `Theme`. `None`, `auto`, an unknown name, or a not-yet-supported
+/// one (including `terminal`) falls back to the default for `appearance` and logs; never a
+/// half-palette.
+pub fn resolve_for(name: Option<&str>, appearance: Appearance) -> Theme {
+    let auto = || match appearance {
+        Appearance::Dark => catppuccin(),
+        Appearance::Light => catppuccin_latte(),
+    };
     match name {
-        None => catppuccin(),
+        None | Some(DEFAULT) => auto(),
         Some(n) => build(n).unwrap_or_else(|| {
             logln!("unknown theme {n:?}; using {DEFAULT}");
-            catppuccin()
+            auto()
         }),
     }
 }
@@ -114,7 +195,65 @@ pub fn resolve(name: Option<&str>) -> Theme {
 /// Whether `name` selects a complete built-in theme. Plugin configuration validates against
 /// this same catalog before a snapshot is applied.
 pub fn is_known(name: &str) -> bool {
+    name == DEFAULT || is_builtin(name)
+}
+
+/// The [`CATALOG`] themes of `appearance`, in catalog order — one side of the theme picker.
+pub fn names(appearance: Appearance) -> Vec<&'static str> {
+    CATALOG.iter().filter(|(_, a)| *a == appearance).map(|&(n, _)| n).collect()
+}
+
+/// The appearance of catalog theme `name`; `None` outside the catalog.
+pub fn appearance_of(name: &str) -> Option<Appearance> {
+    CATALOG.iter().find(|(n, _)| *n == name).map(|&(_, a)| a)
+}
+
+/// Whether `name` is one of the [`CATALOG`] themes — `auto` excluded, since it names none.
+pub fn is_builtin(name: &str) -> bool {
     build(name).is_some()
+}
+
+/// How long the startup probe waits for the terminal to answer an OSC 11 query.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Probe the terminal background once and record it for `auto`: `COLORFGBG` first, then an
+/// OSC 11 query, dark when neither answers.
+///
+/// Must run before raw mode and the event loop: the probe reads the tty, and a read racing
+/// the loop steals keypresses (design doc §7).
+///
+/// NOTE: startup-only. A light/dark switch mid-session (DEC mode 2031) is not followed yet.
+pub fn detect_appearance() {
+    let colorfgbg = std::env::var("COLORFGBG").ok();
+    let appearance = colorfgbg
+        .as_deref()
+        .and_then(appearance_from_colorfgbg)
+        .or_else(query_appearance)
+        .unwrap_or(Appearance::Dark);
+    logln!("terminal appearance={appearance:?} COLORFGBG={colorfgbg:?}");
+    let _ = DETECTED.set(appearance);
+}
+
+/// The appearance a `COLORFGBG` value (`fg;bg` or `fg;default;bg`) names: light for a white
+/// or light-gray background index, dark for any other index, `None` when the last field is
+/// not an index.
+fn appearance_from_colorfgbg(value: &str) -> Option<Appearance> {
+    let bg: u8 = value.rsplit(';').next()?.parse().ok()?;
+    Some(if matches!(bg, 7 | 15) { Appearance::Light } else { Appearance::Dark })
+}
+
+/// Ask the terminal for its colors over OSC 10/11; `None` when it does not answer in time.
+fn query_appearance() -> Option<Appearance> {
+    let mut options = terminal_colorsaurus::QueryOptions::default();
+    options.timeout = PROBE_TIMEOUT;
+    match terminal_colorsaurus::theme_mode(options) {
+        Ok(terminal_colorsaurus::ThemeMode::Light) => Some(Appearance::Light),
+        Ok(terminal_colorsaurus::ThemeMode::Dark) => Some(Appearance::Dark),
+        Err(error) => {
+            logln!("terminal color query failed: {error}");
+            None
+        }
+    }
 }
 
 /// The built theme for `name`, or `None` when it is not a known palette. Names match herdr's
@@ -123,30 +262,57 @@ fn build(name: &str) -> Option<Theme> {
     use Appearance::{Dark, Light};
     use EmbeddedThemeName as E;
     Some(match name {
+        // Dark.
         "catppuccin" => catppuccin(),
-        "catppuccin-latte" => catppuccin_latte(),
         "dracula" => derived("dracula", Dark, E::Dracula, DRACULA),
+        "one-dark" => derived("one-dark", Dark, E::TwoDark, ONE_DARK),
         "nord" => derived("nord", Dark, E::Nord, NORD),
         "gruvbox" => derived("gruvbox", Dark, E::GruvboxDark, GRUVBOX),
-        "gruvbox-light" => derived("gruvbox-light", Light, E::GruvboxLight, GRUVBOX_LIGHT),
-        "one-dark" => derived("one-dark", Dark, E::TwoDark, ONE_DARK),
-        "one-light" => derived("one-light", Light, E::OneHalfLight, ONE_LIGHT),
-        "solarized" => derived("solarized", Dark, E::SolarizedDark, SOLARIZED),
-        "solarized-light" => derived("solarized-light", Light, E::SolarizedLight, SOLARIZED_LIGHT),
-        // Popular themes beyond herdr's set, whose syntax `two-face` already provides.
-        "catppuccin-frappe" => derived("catppuccin-frappe", Dark, E::CatppuccinFrappe, FRAPPE),
-        "catppuccin-macchiato" => {
-            derived("catppuccin-macchiato", Dark, E::CatppuccinMacchiato, MACCHIATO)
-        }
-        "github-light" => derived("github-light", Light, E::Github, GITHUB_LIGHT),
-        "monokai" => derived("monokai", Dark, E::MonokaiExtended, MONOKAI),
-        // herdr names whose syntax `two-face` lacks, paired with a vendored `.tmTheme`.
         "tokyo-night" => bundled("tokyo-night", Dark, TOKYO_NIGHT_TM, TOKYO_NIGHT),
-        "tokyo-night-day" => bundled("tokyo-night-day", Light, TOKYO_NIGHT_DAY_TM, TOKYO_NIGHT_DAY),
+        "monokai" => derived("monokai", Dark, E::MonokaiExtended, MONOKAI),
+        "solarized" => derived("solarized", Dark, E::SolarizedDark, SOLARIZED),
+        "github-dark" => terminal("github-dark", Dark, GITHUB_DARK),
         "rose-pine" => bundled("rose-pine", Dark, ROSE_PINE_TM, ROSE_PINE),
+        "night-owl" => terminal("night-owl", Dark, NIGHT_OWL),
+        "material-darker" => terminal("material-darker", Dark, MATERIAL_DARKER),
+        "ayu-dark" => terminal("ayu-dark", Dark, AYU_DARK),
+        "everforest-dark" => terminal("everforest-dark", Dark, EVERFOREST_DARK),
+        "kanagawa" => terminal("kanagawa", Dark, KANAGAWA),
+        "vscode-dark" => terminal("vscode-dark", Dark, VSCODE_DARK),
+        "xcode-dark" => terminal("xcode-dark", Dark, XCODE_DARK),
+        "cobalt2" => terminal("cobalt2", Dark, COBALT2),
+        "ciapre" => terminal("ciapre", Dark, CIAPRE),
+        "tomorrow-night" => terminal("tomorrow-night", Dark, TOMORROW_NIGHT),
+        // Light.
+        "catppuccin-latte" => catppuccin_latte(),
+        "solarized-light" => derived("solarized-light", Light, E::SolarizedLight, SOLARIZED_LIGHT),
+        "github-light" => derived("github-light", Light, E::Github, GITHUB_LIGHT),
+        "xcode-light" => terminal("xcode-light", Light, XCODE_LIGHT),
+        "one-light" => derived("one-light", Light, E::OneHalfLight, ONE_LIGHT),
+        "gruvbox-light" => derived("gruvbox-light", Light, E::GruvboxLight, GRUVBOX_LIGHT),
+        "tokyo-night-day" => bundled("tokyo-night-day", Light, TOKYO_NIGHT_DAY_TM, TOKYO_NIGHT_DAY),
         "rose-pine-dawn" => bundled("rose-pine-dawn", Light, ROSE_PINE_DAWN_TM, ROSE_PINE_DAWN),
+        "ayu-light" => terminal("ayu-light", Light, AYU_LIGHT),
+        "everforest-light" => terminal("everforest-light", Light, EVERFOREST_LIGHT),
+        "light-owl" => terminal("light-owl", Light, LIGHT_OWL),
+        "tomorrow" => terminal("tomorrow", Light, TOMORROW),
+        "kanagawa-lotus" => terminal("kanagawa-lotus", Light, KANAGAWA_LOTUS),
+        "alabaster" => terminal("alabaster", Light, ALABASTER),
+        "bluloco-light" => terminal("bluloco-light", Light, BLULOCO_LIGHT),
+        "selenized-light" => terminal("selenized-light", Light, SELENIZED_LIGHT),
+        "flexoki-light" => terminal("flexoki-light", Light, FLEXOKI_LIGHT),
+        "dayfox" => terminal("dayfox", Light, DAYFOX),
+        "terminal-basic" => terminal("terminal-basic", Light, TERMINAL_BASIC),
+        "iceberg-light" => terminal("iceberg-light", Light, ICEBERG_LIGHT),
         _ => return None,
     })
+}
+
+/// A theme ported from a terminal color scheme: its palette is derived from `anchors`, and with
+/// no syntax theme of its own, its token colors are derived from that palette too.
+fn terminal(name: &'static str, appearance: Appearance, anchors: Anchors) -> Theme {
+    let palette = derive(anchors, appearance);
+    Theme { name, palette, syntax: SyntaxChoice::Derived(palette) }
 }
 
 /// A derived theme: its palette is computed from `anchors`, paired with a `two-face` syntax theme.
@@ -254,10 +420,6 @@ const SOLARIZED: Anchors =
     anchors(0x002b36, 0x93a1a1, 0xdc322f, 0x859900, 0xb58900, 0xcb4b16, 0x6c71c4, 0x268bd2);
 const SOLARIZED_LIGHT: Anchors =
     anchors(0xfdf6e3, 0x586e75, 0xdc322f, 0x859900, 0xb58900, 0xcb4b16, 0x6c71c4, 0x268bd2);
-const FRAPPE: Anchors =
-    anchors(0x303446, 0xc6d0f5, 0xe78284, 0xa6d189, 0xe5c890, 0xef9f76, 0xca9ee6, 0xbabbf1);
-const MACCHIATO: Anchors =
-    anchors(0x24273a, 0xcad3f5, 0xed8796, 0xa6da95, 0xeed49f, 0xf5a97f, 0xc6a0f6, 0xb7bdf8);
 const GITHUB_LIGHT: Anchors =
     anchors(0xffffff, 0x1f2328, 0xcf222e, 0x1a7f37, 0x9a6700, 0xbc4c00, 0x8250df, 0x0969da);
 const MONOKAI: Anchors =
@@ -270,6 +432,58 @@ const ROSE_PINE: Anchors =
     anchors(0x191724, 0xe0def4, 0xeb6f92, 0x9ccfd8, 0xf6c177, 0xebbcba, 0xc4a7e7, 0x31748f);
 const ROSE_PINE_DAWN: Anchors =
     anchors(0xfaf4ed, 0x575279, 0xb4637a, 0x56949f, 0xea9d34, 0xd7827e, 0x907aa9, 0x286983);
+
+// Ported from terminal color schemes (iTerm2-Color-Schemes, MIT): the scheme's background,
+// foreground and ANSI red, green, yellow, magenta and blue. ANSI has no orange, so orange is
+// the midpoint of red and yellow.
+const GITHUB_DARK: Anchors =
+    anchors(0x0d1117, 0xe6edf3, 0xff7b72, 0x3fb950, 0xd29922, 0xe98a4a, 0xbc8cff, 0x58a6ff);
+const NIGHT_OWL: Anchors =
+    anchors(0x011627, 0xd6deeb, 0xef5350, 0x22da6e, 0xaddb67, 0xce975c, 0xc792ea, 0x82aaff);
+const MATERIAL_DARKER: Anchors =
+    anchors(0x212121, 0xeeffff, 0xff5370, 0xc3e88d, 0xffcb6b, 0xff8f6e, 0xc792ea, 0x82aaff);
+const AYU_DARK: Anchors =
+    anchors(0x0b0e14, 0xbfbdb6, 0xea6c73, 0x7fd962, 0xf9af4f, 0xf28e61, 0xcda1fa, 0x53bdfa);
+const EVERFOREST_DARK: Anchors =
+    anchors(0x232a2e, 0xd3c6aa, 0xe67e80, 0xa7c080, 0xdbbc7f, 0xe19d80, 0xd699b6, 0x7fbbb3);
+const KANAGAWA: Anchors =
+    anchors(0x1f1f28, 0xdcd7ba, 0xc34043, 0x76946a, 0xc0a36e, 0xc27259, 0x957fb8, 0x7e9cd8);
+const VSCODE_DARK: Anchors =
+    anchors(0x1e1e1e, 0xcccccc, 0xcd3131, 0x0dbc79, 0xe5e510, 0xd98b21, 0xbc3fbc, 0x2472c8);
+const XCODE_DARK: Anchors =
+    anchors(0x292a30, 0xdfdfe0, 0xff8170, 0x78c2b3, 0xd9c97c, 0xeca576, 0xff7ab2, 0x4eb0cc);
+const COBALT2: Anchors =
+    anchors(0x132738, 0xffffff, 0xff0000, 0x38de21, 0xffe50a, 0xff7305, 0xff005d, 0x1460d2);
+const CIAPRE: Anchors =
+    anchors(0x191c27, 0xaea47a, 0x8e0d16, 0x48513b, 0xcc8b3f, 0xad4c2b, 0x724d7c, 0x576d8c);
+const TOMORROW_NIGHT: Anchors =
+    anchors(0x1d1f21, 0xc5c8c6, 0xcc6666, 0xb5bd68, 0xf0c674, 0xde966d, 0xb294bb, 0x81a2be);
+const XCODE_LIGHT: Anchors =
+    anchors(0xffffff, 0x262626, 0xd12f1b, 0x3e8087, 0x78492a, 0xa53c23, 0xad3da4, 0x0f68a0);
+const AYU_LIGHT: Anchors =
+    anchors(0xf8f9fa, 0x5c6166, 0xea6c6d, 0x6cbf43, 0xeca944, 0xeb8b59, 0x9e75c7, 0x3199e1);
+const EVERFOREST_LIGHT: Anchors =
+    anchors(0xefebd4, 0x5c6a72, 0xe67e80, 0x9ab373, 0xc1a266, 0xd49073, 0xd699b6, 0x7fbbb3);
+const LIGHT_OWL: Anchors =
+    anchors(0xfbfbfb, 0x403f53, 0xde3d3b, 0x08916a, 0xe0af02, 0xdf761f, 0xd6438a, 0x288ed7);
+const TOMORROW: Anchors =
+    anchors(0xffffff, 0x4d4d4c, 0xc82829, 0x718c00, 0xeab700, 0xd97015, 0x8959a8, 0x4271ae);
+const KANAGAWA_LOTUS: Anchors =
+    anchors(0xf2ecbc, 0x545464, 0xc84053, 0x6f894e, 0x77713f, 0xa05949, 0xb35b79, 0x4d699b);
+const ALABASTER: Anchors =
+    anchors(0xf7f7f7, 0x000000, 0xaa3731, 0x448c27, 0xcb9000, 0xbb6419, 0x7a3e9d, 0x325cc0);
+const BLULOCO_LIGHT: Anchors =
+    anchors(0xf9f9f9, 0x373a41, 0xd52753, 0x23974a, 0xdf631c, 0xda4538, 0x823ff1, 0x275fe4);
+const SELENIZED_LIGHT: Anchors =
+    anchors(0xfbf3db, 0x53676d, 0xd2212d, 0x489100, 0xad8900, 0xc05517, 0xca4898, 0x0072d4);
+const FLEXOKI_LIGHT: Anchors =
+    anchors(0xfffcf0, 0x100f0f, 0xaf3029, 0x66800b, 0xad8301, 0xae5a15, 0xa02f6f, 0x205ea6);
+const DAYFOX: Anchors =
+    anchors(0xf6f2ee, 0x3d2b5a, 0xa5222f, 0x396847, 0xac5402, 0xa93b19, 0x6e33ce, 0x2848a9);
+const TERMINAL_BASIC: Anchors =
+    anchors(0xffffff, 0x000000, 0x990000, 0x00a600, 0x999900, 0x994d00, 0xb200b2, 0x0000b2);
+const ICEBERG_LIGHT: Anchors =
+    anchors(0xe8e9ec, 0x33374c, 0xcc517a, 0x668e3d, 0xc57339, 0xc9625a, 0x7759b4, 0x2d539e);
 
 /// Build `Anchors` from `0xRRGGBB` hex literals, so a palette reads as one compact row.
 /// One argument per anchor slot — the count is the palette's shape, not accidental.
@@ -340,6 +554,10 @@ const BLACK: Color = Color::Rgb(0x00, 0x00, 0x00);
 /// The lowest contrast a diff fill keeps against the row's text, so code on a fill stays
 /// legible on any base.
 const MIN_FILL_CONTRAST: f64 = 4.5;
+
+/// The lowest contrast a derived syntax color keeps against `base`: below body text's 4.5, so
+/// accents keep their hue, but clear of the pale ANSI yellows some light schemes carry.
+const MIN_TOKEN_CONTRAST: f64 = 3.0;
 
 /// A diff-row fill: tint `base` with `accent`, stepping the tint down from its start strength
 /// until the row's `fg` clears [`MIN_FILL_CONTRAST`]. `strong` is the brighter word-emphasis
@@ -421,7 +639,8 @@ fn channels(color: Color) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Appearance, CATPPUCCIN_LATTE, MIN_FILL_CONTRAST, Palette, contrast, derive, resolve,
+        Appearance, CATALOG, CATPPUCCIN_LATTE, MIN_FILL_CONTRAST, Palette, contrast, derive,
+        resolve, resolve_for,
     };
     use ratatui::style::Color;
 
@@ -459,6 +678,39 @@ mod tests {
     }
 
     #[test]
+    fn auto_follows_the_terminal_appearance() {
+        assert_eq!(resolve_for(Some("auto"), Appearance::Dark).name, "catppuccin");
+        assert_eq!(resolve_for(Some("auto"), Appearance::Light).name, "catppuccin-latte");
+        assert_eq!(resolve_for(None, Appearance::Light).name, "catppuccin-latte");
+        assert_eq!(resolve_for(Some("nope"), Appearance::Light).name, "catppuccin-latte");
+        // An explicit theme wins over the terminal.
+        assert_eq!(resolve_for(Some("nord"), Appearance::Light).name, "nord");
+        assert!(super::is_known("auto"));
+    }
+
+    #[test]
+    fn names_split_the_catalog_by_appearance() {
+        use super::{appearance_of, names};
+        let dark = names(Appearance::Dark);
+        let light = names(Appearance::Light);
+        assert_eq!((dark[0], dark.len()), ("catppuccin", 20));
+        assert_eq!((light[0], light.len()), ("catppuccin-latte", 20));
+        assert_eq!(appearance_of("iceberg-light"), Some(Appearance::Light));
+        assert_eq!(appearance_of("auto"), None);
+    }
+
+    #[test]
+    fn colorfgbg_names_the_background_index() {
+        use super::appearance_from_colorfgbg as parse;
+        assert_eq!(parse("15;0"), Some(Appearance::Dark));
+        assert_eq!(parse("0;15"), Some(Appearance::Light));
+        assert_eq!(parse("0;default;7"), Some(Appearance::Light));
+        assert_eq!(parse("12;8"), Some(Appearance::Dark));
+        assert_eq!(parse("15;default"), None);
+        assert_eq!(parse(""), None);
+    }
+
+    #[test]
     fn latte_is_a_selectable_light_theme() {
         assert_eq!(resolve(Some("catppuccin-latte")).name, "catppuccin-latte");
     }
@@ -486,38 +738,41 @@ mod tests {
         );
     }
 
-    /// Every named theme and its appearance (`true` = light).
-    const NAMED: &[(&str, bool)] = &[
-        ("catppuccin", false),
-        ("catppuccin-latte", true),
-        ("dracula", false),
-        ("nord", false),
-        ("gruvbox", false),
-        ("gruvbox-light", true),
-        ("one-dark", false),
-        ("one-light", true),
-        ("solarized", false),
-        ("solarized-light", true),
-        ("catppuccin-frappe", false),
-        ("catppuccin-macchiato", false),
-        ("github-light", true),
-        ("monokai", false),
-        ("tokyo-night", false),
-        ("tokyo-night-day", true),
-        ("rose-pine", false),
-        ("rose-pine-dawn", true),
-    ];
+    #[test]
+    fn the_catalog_is_twenty_dark_then_twenty_light() {
+        let dark = CATALOG.iter().filter(|(_, a)| *a == Appearance::Dark).count();
+        assert_eq!((dark, CATALOG.len() - dark), (20, 20));
+        let mut names: Vec<_> = CATALOG.iter().map(|(n, _)| n).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), CATALOG.len(), "catalog names are unique");
+    }
+
+    #[test]
+    fn derived_token_colors_clear_the_floor() {
+        for &(name, _) in CATALOG {
+            let p = resolve(Some(name)).palette;
+            for accent in [p.red, p.green, p.yellow, p.orange, p.purple, p.blue, p.dim1] {
+                let c = p.legible(accent);
+                assert!(
+                    contrast(c, p.base) >= super::MIN_TOKEN_CONTRAST || c == p.text,
+                    "{name}: token {c:?} is illegible on {:?}",
+                    p.base,
+                );
+            }
+        }
+    }
 
     #[test]
     fn every_named_theme_resolves_to_itself() {
-        for &(name, _) in NAMED {
+        for &(name, _) in CATALOG {
             assert_eq!(resolve(Some(name)).name, name, "{name} should resolve to its own palette");
         }
     }
 
     #[test]
     fn every_theme_keeps_diff_fills_legible() {
-        for &(name, _) in NAMED {
+        for &(name, _) in CATALOG {
             let p = resolve(Some(name)).palette;
             for fill in [p.del_bg, p.ins_bg, p.emph_del_bg, p.emph_ins_bg, p.sel_bg] {
                 assert!(
@@ -530,7 +785,8 @@ mod tests {
 
     #[test]
     fn appearance_orients_text_against_surface() {
-        for &(name, light) in NAMED {
+        for &(name, appearance) in CATALOG {
+            let light = appearance == Appearance::Light;
             let p = resolve(Some(name)).palette;
             // Light theme: dark text on a lighter surface. Dark theme: the reverse.
             let text_darker = super::luminance(p.text) < super::luminance(p.surface0);

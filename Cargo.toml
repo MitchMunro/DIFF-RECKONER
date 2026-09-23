@@ -26,6 +26,7 @@ similar = { version = "3.1.1", features = ["text"] }
 # Dumps + fancy-regex only: no yaml-load (we read prebuilt binary syntax dumps, so the
 # unmaintained yaml-rust never enters the tree), no onig (pure-Rust regex engine).
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "dump-load", "plist-load"] }
+terminal-colorsaurus = "1.0.3"
 toml = "1.1"
 two-face = "0.5.1"
 unicode-width = "0.2"

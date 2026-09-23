@@ -64,6 +64,8 @@ pub fn run() -> Result<()> {
     // The config directory resolves once, at startup; every later read rereads only the
     // file inside it.
     cfg.plugin_config_dir = config::resolve_config_dir(|| None);
+    // Before `ratatui::init` claims raw mode: the probe reads the tty itself.
+    theme::detect_appearance();
     let initial_config = config::plugin_config(cfg.plugin_config_dir.as_deref());
     let mut app = app_for(&cfg, &initial_config);
 
@@ -316,6 +318,7 @@ fn ready_app(cfg: &Config, plugin_config: PluginConfig) -> App {
         scope.name()
     );
     let mut app = App::new(repo, scope, cfg.base.clone());
+    app.set_config_dir(cfg.plugin_config_dir.clone());
     app.set_plugin_config(plugin_config);
     app.set_cli_theme(cfg.theme.clone());
     if let Some(wrap) = cfg.wrap {
@@ -909,7 +912,7 @@ fn reconcile_plugin_config(
         return ConfigGate::Unchanged;
     };
 
-    if previous.theme() != current.theme() {
+    if previous.active_theme() != current.active_theme() {
         // A theme change invalidates highlighted diffs. Rebuild before another input or
         // frame can mix states; `reload` preserves the frozen diff while composing.
         if let Err(error) = app.reload() {
@@ -926,7 +929,8 @@ fn reconcile_plugin_config(
 fn config_ends_gesture(previous: &PluginConfig, observed: Option<&PluginConfig>) -> bool {
     match observed {
         Some(c) => {
-            previous.navigator_position() != c.navigator_position() || previous.theme() != c.theme()
+            previous.navigator_position() != c.navigator_position()
+                || previous.active_theme() != c.active_theme()
         }
         None => true,
     }
@@ -1153,6 +1157,28 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
         return Ok(());
     }
 
+    // The theme picker: `↑`/`↓` move within a side and `←`/`→` switch sides, each previewing
+    // the highlight; `enter` saves it; `esc` and the `theme` binding close. Every other key is
+    // inert. A theme swap drops the highlighted diffs, so a changed theme rebuilds the open one
+    // before the next frame, as a config theme change does.
+    if app.mode == Mode::ThemePick {
+        use crate::theme::Appearance;
+        let before = app.active_theme();
+        match (action, key.code) {
+            (Some(K::Theme), _) | (_, Esc) => app.close_theme_picker(),
+            (_, Enter) => app.theme_picker_save(),
+            (_, Down) => app.theme_picker_move(1),
+            (_, Up) => app.theme_picker_move(-1),
+            (_, Left) => app.theme_picker_side(Appearance::Dark),
+            (_, Right) => app.theme_picker_side(Appearance::Light),
+            _ => {}
+        }
+        if app.active_theme() != before && app.config_error().is_none() {
+            app.reload()?;
+        }
+        return Ok(());
+    }
+
     // The comments-list overlay acts through the same bindings and closes on `esc` and the
     // `comments` binding.
     if app.mode == Mode::List {
@@ -1202,6 +1228,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             K::NextFile => app.next_file(),
             K::PrevFile => app.prev_file(),
             K::Wrap => app.toggle_wrap(),
+            K::Theme => app.open_theme_picker(),
             K::Preview => app.toggle_preview(),
             K::NavigatorPosition => app.cycle_navigator_position(),
             K::NavigatorHide => app.toggle_navigator_hidden(),
@@ -1701,8 +1728,9 @@ pub fn handle_mouse(
     }
 
     // A modal captures new mouse gestures, but a divider gesture cancelled by the key that
-    // opened it still owns its remaining drag and mouse-up events.
-    if app.mode.is_modal() {
+    // opened it still owns its remaining drag and mouse-up events. The theme picker is not
+    // modal, but its popup captures the mouse the same way.
+    if app.mode.is_modal() || app.mode == Mode::ThemePick {
         // Text selection stays available while the comment editor is open, selecting from the
         // frozen view under it; its clicks stay inert like the rest of the modal's pane
         if app.composing() {
