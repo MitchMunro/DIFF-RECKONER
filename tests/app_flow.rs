@@ -4831,8 +4831,10 @@ fn the_gutter_click_and_drag_open_the_composer_and_stay_inert_while_composing() 
     assert!(app.text_drag().is_none());
 
     // A double-click on the frozen view still copies its word — a selection copy, not a
-    // pane click — and the composer holds its line untouched.
-    let (c0, r0) = sel_cell(&app, 0, 0);
+    // pane click — and the composer holds its line untouched. The box sits over the line it
+    // annotates, so the line is the first row below it.
+    let below_box = diff_reckoner::ui::composer_height(&app, inner.width as usize);
+    let (c0, r0) = sel_cell(&app, below_box, 0);
     sel_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c0, r0);
     sel_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), c0, r0);
     sel_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), c0, r0);

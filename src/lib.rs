@@ -1039,7 +1039,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
         let alt_or_shift = key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
         let word = alt || ctrl; // word-jump on Alt/Ctrl + arrow (terminal-dependent)
         // The wrapped width of the box, for vertical (wrapped-row) caret movement.
-        let cw = ui::composer_content_width(ui::diff_inner_width(area, app));
+        let cw = ui::composer_content_width(app, ui::diff_inner_width(area, app));
         match key.code {
             Esc => app.cancel_comment(),
             // Alt/Shift+Enter (and Ctrl+J) insert a newline; plain Enter submits.

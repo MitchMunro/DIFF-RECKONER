@@ -3535,15 +3535,12 @@ impl App {
         self.visible.get(lo..=hi).is_some_and(|s| s.iter().any(Row::is_content))
     }
 
-    /// The `path:line` the composer is anchored to: the line a new comment goes above, or
-    /// an edited comment's own lines. `None` when not composing.
-    pub fn pending_location(&self) -> Option<String> {
+    /// The line the composed comment starts on: the line a new comment goes above, or an
+    /// edited comment's first line. `None` when not composing.
+    pub fn pending_line(&self) -> Option<u32> {
         match &self.mode {
-            Mode::Composing { editing: Some(c) } => Some(c.location()),
-            Mode::Composing { editing: None } => {
-                let (file, at) = self.placement().ok()?;
-                Some(format!("{file}:{}", at.before))
-            }
+            Mode::Composing { editing: Some(c) } => Some(c.start),
+            Mode::Composing { editing: None } => Some(self.placement().ok()?.1.before),
             Mode::Normal
             | Mode::List
             | Mode::BasePick

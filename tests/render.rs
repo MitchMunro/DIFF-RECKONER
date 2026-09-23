@@ -95,6 +95,44 @@ fn invalid_config_replaces_the_entire_pane_with_its_error() {
 }
 
 #[test]
+fn a_new_comment_box_hangs_off_its_line_number_above_the_line_it_pushes_down() {
+    let (_repo, mut app) = edited_app();
+    composing(&mut app);
+    let out = render(&app);
+    let lines: Vec<&str> = out.lines().collect();
+    let top = lines.iter().position(|l| l.contains("─ comment ─")).expect("the box's top border");
+    // The comment's line number takes the box's top-left corner, in the gutter's column, and
+    // the title carries no file name.
+    assert!(lines[top].starts_with("│   2 ─ comment ─"), "\n{out}");
+    assert!(lines[top].contains("─┐││"), "\n{out}");
+    assert!(!lines[top].contains("hello.rs"), "\n{out}");
+    // The box's left side runs down from the number's first digit.
+    assert!(lines[top + 1].starts_with("│   │ Leave a comment…"), "\n{out}");
+    assert!(lines[top + 2].starts_with("│   └──"), "\n{out}");
+    // The line the comment goes above sits under the box, its number starred.
+    assert!(lines[top + 3].starts_with("│▌  2*BETA"), "\n{out}");
+    // Above the box, the removed line; the added one moved below it.
+    assert!(lines[top - 1].starts_with("│▌  2 beta"), "\n{out}");
+}
+
+#[test]
+fn the_comment_box_side_lines_up_with_a_wider_numbers_first_digit() {
+    let r = Repo::init();
+    let before = (1..=12).fold(String::new(), |s, i| s + &format!("l{i}\n"));
+    r.write("long.rs", &before);
+    r.commit_all("init");
+    r.write("long.rs", &before.replace("l11\n", "L11\n"));
+    let mut app = app_on(&r);
+    composing(&mut app);
+    let out = render(&app);
+    let lines: Vec<&str> = out.lines().collect();
+    let top = lines.iter().position(|l| l.contains("─ comment ─")).expect("the box's top border");
+    assert!(lines[top].starts_with("│  11 ─ comment ─"), "\n{out}");
+    assert!(lines[top + 1].starts_with("│  │ "), "\n{out}");
+    assert!(lines[top + 2].starts_with("│  └──"), "\n{out}");
+}
+
+#[test]
 fn the_empty_comment_box_shows_a_placeholder() {
     let (_repo, mut app) = edited_app();
     composing(&mut app);
@@ -873,13 +911,13 @@ fn composing_renders_the_inline_multiline_box() {
     }
 
     let out = render(&app);
-    assert!(out.contains("comment ·"), "box titled with the location");
+    assert!(out.contains("─ comment ─"), "box titled");
     assert!(out.contains("line one"), "first input line shown");
     assert!(out.contains("line two"), "second input line shown — the box is multi-line");
 }
 
 #[test]
-fn the_box_grows_with_multiline_input_and_keeps_the_anchor_visible() {
+fn the_box_grows_with_multiline_input_and_keeps_the_anchor_visible_below_it() {
     let r = Repo::init();
     r.write("mid.rs", "a\nb\nc\nd\ne\n");
     r.commit_all("init");
@@ -898,12 +936,12 @@ fn the_box_grows_with_multiline_input_and_keeps_the_anchor_visible() {
     let lines: Vec<&str> = out.lines().collect();
     // The inserted line is the only one carrying an uppercase `B` (no `+` glyph now).
     let anchor = lines.iter().position(|l| l.contains('B')).expect("anchor line visible");
-    let box_row = lines.iter().position(|l| l.contains("comment ·")).expect("box");
-    assert!(anchor < box_row, "the commented line stays above the box as it grows");
+    let box_row = lines.iter().position(|l| l.contains("─ comment ─")).expect("box");
+    assert!(anchor > box_row, "the commented line stays visible below the box as it grows");
 }
 
 #[test]
-fn the_box_is_inserted_under_the_selected_line() {
+fn the_box_is_inserted_above_the_selected_line() {
     let r = Repo::init();
     r.write("mid.rs", "alpha\nbeta\ngamma\n");
     r.commit_all("init");
@@ -918,7 +956,11 @@ fn the_box_is_inserted_under_the_selected_line() {
 
     let out = render(&app);
     let lines: Vec<&str> = out.lines().collect();
-    let box_row = lines.iter().position(|l| l.contains("comment ·")).expect("box rendered");
+    let box_row = lines.iter().position(|l| l.contains("─ comment ─")).expect("box rendered");
+    let above_row = lines.iter().position(|l| l.contains("alpha")).expect("context above shown");
+    let selected_row = lines.iter().position(|l| l.contains("BETA")).expect("selected line shown");
+    assert!(above_row < box_row, "the diff line above the selection stays above the box");
+    assert!(selected_row > box_row, "the selected line is pushed under the box");
     let below_row = lines.iter().position(|l| l.contains("gamma")).expect("context below shown");
     assert!(below_row > box_row, "the diff line below the selection is pushed under the box");
 }
