@@ -202,8 +202,10 @@ impl FileDiff {
         }
 
         let lang = language.as_deref();
-        let old_spans = hl.highlight(old, lang);
-        let new_spans = hl.highlight(new, lang);
+        // Keyed per side, so a re-build after an edit re-highlights only around it.
+        let old_key = format!("old:{}", previous_path.as_deref().unwrap_or(&path));
+        let old_spans = hl.highlight_file(&old_key, old, lang);
+        let new_spans = hl.highlight_file(&format!("new:{path}"), new, lang);
         let line = |spans: &[Vec<Span>], i: usize| spans.get(i).cloned().unwrap_or_default();
 
         let mut rows = Vec::new();
@@ -262,7 +264,9 @@ impl FileDiff {
         if over_byte_budget(content.len()) || content.lines().count() > MAX_LINES {
             return notice(FileState::TooLarge);
         }
-        let spans = hl.highlight(content, language_of(&path).as_deref());
+        // The worktree side, so it shares the diff's new-side key.
+        let spans =
+            hl.highlight_file(&format!("new:{path}"), content, language_of(&path).as_deref());
         let rows = content
             .lines()
             .enumerate()

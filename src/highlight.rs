@@ -4,14 +4,17 @@
 //! changes and produces per-line foreground spans; the background is the palette's `base`,
 //! painted by the renderer.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
 use std::io::Cursor;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use syntect::easy::HighlightLines;
 use syntect::highlighting::{
-    Color as SyntectColor, StyleModifier, Theme, ThemeItem, ThemeSet, ThemeSettings,
+    Color as SyntectColor, HighlightIterator, HighlightState, Highlighter as SyntectHighlighter,
+    StyleModifier, Theme, ThemeItem, ThemeSet, ThemeSettings,
 };
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 use std::sync::OnceLock;
@@ -43,6 +46,160 @@ fn embedded_themes() -> &'static two_face::theme::EmbeddedLazyThemeSet {
 pub struct Highlighter {
     theme: Option<Theme>,
     default_fg: Color,
+    /// Which highlighter owns [`MEMO`]. A theme switch builds a new highlighter, so no memoised
+    /// span outlives its theme.
+    id: u64,
+}
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// Each [`Highlighter::highlight_file`] key's last highlight, which the next one resumes
+    /// from, for the highlighter whose id it holds. Thread-local because syntect's parser state
+    /// is not `Send` and an `App` can be built off the main thread; one built elsewhere starts
+    /// cold here.
+    static MEMO: RefCell<(u64, HashMap<String, Memo>)> = RefCell::default();
+}
+
+/// Parser state is saved every this many lines, so a re-highlight resumes at most this far
+/// above an edit and re-joins the old spans at most this far below it.
+const CHECKPOINT_EVERY: usize = 32;
+
+/// Cap the memo like `DiffCache`: at the cap it is cleared.
+const MEMO_CAP: usize = 64;
+
+/// One key's last highlight: its lines (with endings), their spans, and the parser state at
+/// the start of every [`CHECKPOINT_EVERY`]th line, ascending from line 0.
+struct Memo {
+    syntax: String,
+    lines: Vec<String>,
+    spans: Vec<Vec<Span>>,
+    checkpoints: Vec<Checkpoint>,
+}
+
+/// The parser and highlighter state at the start of `line`.
+#[derive(Clone)]
+struct Checkpoint {
+    line: usize,
+    parse: ParseState,
+    highlight: HighlightState,
+}
+
+impl Checkpoint {
+    fn shifted(mut self, by: isize) -> Self {
+        self.line = self.line.saturating_add_signed(by);
+        self
+    }
+}
+
+/// A highlight in progress: the syntect state carried from line to line.
+struct Run<'a> {
+    highlighter: SyntectHighlighter<'a>,
+    parse: ParseState,
+    highlight: HighlightState,
+}
+
+impl<'a> Run<'a> {
+    fn start(syntax: &SyntaxReference, theme: &'a Theme) -> Self {
+        let highlighter = SyntectHighlighter::new(theme);
+        let highlight = HighlightState::new(&highlighter, ScopeStack::new());
+        Self { highlighter, parse: ParseState::new(syntax), highlight }
+    }
+
+    fn resume(theme: &'a Theme, at: &Checkpoint) -> Self {
+        Self {
+            highlighter: SyntectHighlighter::new(theme),
+            parse: at.parse.clone(),
+            highlight: at.highlight.clone(),
+        }
+    }
+
+    fn checkpoint(&self, line: usize) -> Checkpoint {
+        Checkpoint { line, parse: self.parse.clone(), highlight: self.highlight.clone() }
+    }
+
+    fn is_at(&self, at: &Checkpoint) -> bool {
+        self.parse == at.parse && self.highlight == at.highlight
+    }
+
+    /// Highlight one line (with its ending) and advance the state past it.
+    fn line(&mut self, line: &str, default_fg: Color) -> Vec<Span> {
+        match self.parse.parse_line(line, syntaxes()) {
+            Ok(ops) => HighlightIterator::new(&mut self.highlight, &ops, line, &self.highlighter)
+                .map(|(style, text)| Span {
+                    text: text.trim_end_matches('\n').to_string(),
+                    color: from_syntect(style.foreground),
+                })
+                .collect(),
+            // A grammar error degrades to plain text rather than blocking the diff.
+            Err(_) => {
+                vec![Span { text: line.trim_end_matches('\n').to_string(), color: default_fg }]
+            }
+        }
+    }
+}
+
+impl Memo {
+    /// Highlight `lines`, reusing `old` wherever the result cannot differ: resume from the last
+    /// checkpoint above the first changed line, and once the state matches an old checkpoint
+    /// inside the unchanged tail, take the old spans from there on. Syntect's state after a
+    /// line is a function of the state before it and the line, so this equals a full highlight.
+    fn build(
+        old: Option<Self>,
+        syntax: &SyntaxReference,
+        theme: &Theme,
+        lines: &[&str],
+        fg: Color,
+    ) -> Self {
+        let old = old.unwrap_or_else(|| Self {
+            syntax: syntax.name.clone(),
+            lines: Vec::new(),
+            spans: Vec::new(),
+            checkpoints: Vec::new(),
+        });
+        let (old_n, new_n) = (old.lines.len(), lines.len());
+        let prefix = old.lines.iter().zip(lines).take_while(|(a, b)| a == *b).count();
+        if prefix == old_n && prefix == new_n {
+            return old;
+        }
+        let suffix = old.lines[prefix..]
+            .iter()
+            .rev()
+            .zip(lines[prefix..].iter().rev())
+            .take_while(|(a, b)| a == *b)
+            .count();
+        let shift = new_n as isize - old_n as isize;
+
+        let mut checkpoints = old.checkpoints;
+        let kept = checkpoints.iter().rposition(|c| c.line <= prefix).map_or(0, |k| k + 1);
+        let mut tail = checkpoints.split_off(kept).into_iter().peekable();
+        let (mut run, start) = match checkpoints.last() {
+            Some(at) => (Run::resume(theme, at), at.line),
+            None => (Run::start(syntax, theme), 0),
+        };
+        let mut spans = old.spans;
+        let mut old_spans = spans.split_off(start);
+
+        for (j, line) in lines.iter().enumerate().skip(start) {
+            if j >= new_n - suffix {
+                // Old line `oj` is this one, with everything below it unchanged.
+                let oj = j.saturating_add_signed(-shift);
+                while tail.next_if(|c| c.line < oj).is_some() {}
+                if let Some(at) = tail.next_if(|c| c.line == oj && run.is_at(c)) {
+                    checkpoints.push(at.shifted(shift));
+                    checkpoints.extend(tail.map(|c| c.shifted(shift)));
+                    spans.extend(old_spans.drain(oj - start..));
+                    break;
+                }
+            }
+            if checkpoints.last().is_none_or(|c| j - c.line >= CHECKPOINT_EVERY) {
+                checkpoints.push(run.checkpoint(j));
+            }
+            spans.push(run.line(line, fg));
+        }
+        let lines = lines.iter().map(|l| (*l).to_string()).collect();
+        Self { syntax: syntax.name.clone(), lines, spans, checkpoints }
+    }
 }
 
 impl fmt::Debug for Highlighter {
@@ -73,7 +230,7 @@ impl Highlighter {
         };
         let default_fg =
             theme.as_ref().and_then(|t| t.settings.foreground).map_or(DEFAULT_FG, from_syntect);
-        Self { theme, default_fg }
+        Self { theme, default_fg, id: NEXT_ID.fetch_add(1, Ordering::Relaxed) }
     }
 
     /// Highlight `content` line by line. Each inner `Vec` is one line's spans. With no
@@ -81,36 +238,53 @@ impl Highlighter {
     /// default color. `language` matches as an extension first (paths), then as a token
     /// name (markdown fence tags like `rust` or `python`).
     pub fn highlight(&self, content: &str, language: Option<&str>) -> Vec<Vec<Span>> {
+        let Some((syntax, theme)) = self.resolve(language) else { return self.plain(content) };
+        let mut run = Run::start(syntax, theme);
+        LinesWithEndings::from(content).map(|line| run.line(line, self.default_fg)).collect()
+    }
+
+    /// [`highlight`](Self::highlight), resuming from `key`'s last highlight so an edit
+    /// re-highlights only the lines around it. For whole files that are re-highlighted as they
+    /// change: `key` names the file and side, so each keeps its own last text.
+    pub fn highlight_file(
+        &self,
+        key: &str,
+        content: &str,
+        language: Option<&str>,
+    ) -> Vec<Vec<Span>> {
+        let Some((syntax, theme)) = self.resolve(language) else { return self.plain(content) };
+        let lines: Vec<&str> = LinesWithEndings::from(content).collect();
+        MEMO.with_borrow_mut(|(owner, memo)| {
+            if *owner != self.id {
+                *owner = self.id;
+                memo.clear();
+            }
+            let old = memo.remove(key).filter(|m| m.syntax == syntax.name);
+            let next = Memo::build(old, syntax, theme, &lines, self.default_fg);
+            let spans = next.spans.clone();
+            if memo.len() >= MEMO_CAP {
+                memo.clear();
+            }
+            memo.insert(key.to_string(), next);
+            spans
+        })
+    }
+
+    /// The syntax for `language`, matched as an extension first (paths), then as a token name
+    /// (markdown fence tags), with the loaded theme; `None` when either is missing.
+    fn resolve(&self, language: Option<&str>) -> Option<(&'static SyntaxReference, &Theme)> {
         let syntaxes = syntaxes();
         let syntax = language.and_then(|lang| {
             syntaxes.find_syntax_by_extension(lang).or_else(|| syntaxes.find_syntax_by_token(lang))
-        });
-        let (Some(syntax), Some(theme)) = (syntax, self.theme.as_ref()) else {
-            return content
-                .lines()
-                .map(|l| vec![Span { text: l.to_string(), color: self.default_fg }])
-                .collect();
-        };
-        let mut h = HighlightLines::new(syntax, theme);
-        let mut out = Vec::new();
-        for line in LinesWithEndings::from(content) {
-            let spans = match h.highlight_line(line, syntaxes) {
-                Ok(regions) => regions
-                    .into_iter()
-                    .map(|(style, text)| Span {
-                        text: text.trim_end_matches('\n').to_string(),
-                        color: from_syntect(style.foreground),
-                    })
-                    .collect(),
-                // A grammar error degrades to plain text rather than blocking the diff.
-                Err(_) => vec![Span {
-                    text: line.trim_end_matches('\n').to_string(),
-                    color: self.default_fg,
-                }],
-            };
-            out.push(spans);
-        }
-        out
+        })?;
+        Some((syntax, self.theme.as_ref()?))
+    }
+
+    fn plain(&self, content: &str) -> Vec<Vec<Span>> {
+        content
+            .lines()
+            .map(|l| vec![Span { text: l.to_string(), color: self.default_fg }])
+            .collect()
     }
 }
 
@@ -210,6 +384,33 @@ mod tests {
         assert_eq!(spans.iter().map(|s| s.text.as_str()).collect::<String>(), "let x = 1;");
         // The Catppuccin keyword color (purple) differs from the default text color.
         assert!(spans.iter().any(|s| s.text == "let" && s.color != super::DEFAULT_FG));
+    }
+
+    #[test]
+    fn a_resumed_highlight_equals_a_full_one() {
+        let h = Highlighter::new(mocha());
+        let base: String = (0..300)
+            .map(|i| format!("fn f{i}() {{ let x = \"{i}\"; }}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let edits = [
+            base.clone(),
+            base.replacen("fn f150", "// a comment\nfn f150", 1),
+            base.replacen("fn f5()", "fn f5() {}\n// two\n// lines\nfn g5()", 1),
+            base.replacen("fn f200() { let x = \"200\"; }\n", "", 1),
+            // An unclosed block comment changes the state of every line below it.
+            base.replacen("fn f100", "/* open\nfn f100", 1),
+            base.replacen("fn f100", "/* open\nfn f100", 1).replacen("fn f250", "*/ fn f250", 1),
+            format!("{base}fn tail() {{}}\n"),
+            base.split_inclusive('\n').skip(40).collect(),
+            String::new(),
+            base,
+        ];
+        for (i, content) in edits.iter().enumerate() {
+            let resumed = h.highlight_file("new:a.rs", content, Some("rs"));
+            assert_eq!(resumed, h.highlight(content, Some("rs")), "edit {i}");
+        }
     }
 
     #[test]
