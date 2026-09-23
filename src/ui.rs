@@ -146,12 +146,12 @@ fn scrim_behind(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// The vertical bands: tab bar, body, footer. The comment input is inline in the diff, not a band
-/// of its own. The footer is one row until the `?` expansion opens it, when it grows by the wrapped
-/// bands — capped so the body keeps its `Min(3)`.
+/// The vertical bands: the boxed tab bar, body, footer. The comment input is inline in the diff,
+/// not a band of its own. The footer is one row until the `?` expansion opens it, when it grows
+/// by the wrapped bands — capped so the body keeps its `Min(3)`.
 fn vrows(area: Rect, app: &App) -> Rc<[Rect]> {
     let footer = footer_height(app, area);
-    Layout::vertical([Constraint::Length(1), Constraint::Min(3), Constraint::Length(footer)])
+    Layout::vertical([Constraint::Length(3), Constraint::Min(3), Constraint::Length(footer)])
         .split(area)
 }
 
@@ -634,7 +634,9 @@ fn render_text_selection(frame: &mut Frame, app: &App, area: Rect) {
     if is_live && drag.anchor == drag.extent {
         return;
     }
-    let style = Style::default().bg(app.palette().sel_bg);
+    // Reverse video, like a terminal's own selection: it reads over any fill, the cursor row's
+    // included.
+    let style = Style::default().add_modifier(Modifier::REVERSED);
     let (lo, hi) = drag.ordered();
     match drag.surface {
         Surface::Files => {
@@ -1203,9 +1205,11 @@ pub enum HeaderHit {
 /// shift the spans under the pointer (one snapshot per frame).
 #[must_use]
 pub fn hit_header(area: Rect, app: &App, keymap: &Keymap, col: u16, row: u16) -> Option<HeaderHit> {
-    if row != area.y {
+    let line = tab_bar_line(vrows(area, app)[0]);
+    if row != line.y || !(line.x..line.x + line.width).contains(&col) {
         return None;
     }
+    let col = col - line.x;
     let spans = tab_spans(keymap);
     for &(tab, start, end) in &spans {
         if (start as u16..end as u16).contains(&col) {
@@ -1218,7 +1222,7 @@ pub fn hit_header(area: Rect, app: &App, keymap: &Keymap, col: u16, row: u16) ->
     if (scope_start..scope_end).contains(&col) {
         return Some(HeaderHit::Scope);
     }
-    if let Some((lead, name, tail)) = base_parts(app, keymap, area.width) {
+    if let Some((lead, name, tail)) = base_parts(app, keymap, line.width) {
         let base_start = scope_end + BASE_GAP.len() as u16;
         let base_end = base_start + (lead.width() + name.width() + tail.width()) as u16;
         if (base_start..base_end).contains(&col) {
@@ -1395,7 +1399,7 @@ fn header_suffix(app: &App) -> String {
 /// before each header's own suffix. One source so the two headers can't drift.
 fn tab_bar_spans(app: &App) -> Vec<Span<'static>> {
     let p = app.palette();
-    let bar = Style::default().bg(p.surface0);
+    let bar = Style::default();
     let mut spans = vec![Span::styled(HEADER_LEAD, bar)];
     for (i, (tab, label)) in tab_labels(app.keymap()).into_iter().enumerate() {
         if i > 0 {
@@ -1416,7 +1420,15 @@ fn tab_bar_spans(app: &App) -> Vec<Span<'static>> {
     spans
 }
 
-fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
+/// The tab bar's one text row, inside its box. One source for the paint and the click hit-test.
+fn tab_bar_line(band: Rect) -> Rect {
+    Block::default().borders(Borders::ALL).inner(band)
+}
+
+fn render_tab_bar(frame: &mut Frame, app: &App, band: Rect) {
+    // Boxed like the panes, untitled.
+    frame.render_widget(bordered("", app.palette()), band);
+    let area = tab_bar_line(band);
     let chip = scope_chip(app);
     let base = base_parts(app, app.keymap(), area.width);
     let base_width = base.as_ref().map_or(0, |(lead, name, tail)| {
@@ -1429,10 +1441,10 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Right-align the suffix; at least one gap column when the bar overflows.
     let pad = (area.width as usize).saturating_sub(used).max(1);
 
-    // A quiet surface bar: the active tab in bright blue, the inactive one dimmed, the
-    // clickable scope control accented so it reads as a button.
+    // The active tab in bright blue, the inactive one dimmed, the clickable scope control
+    // accented so it reads as a button.
     let p = app.palette();
-    let bar = Style::default().bg(p.surface0);
+    let bar = Style::default();
     let mut spans = tab_bar_spans(app);
     spans.push(Span::styled(chip, bar.fg(p.yellow).add_modifier(Modifier::BOLD)));
     if let Some((lead, name, tail)) = base {
@@ -1455,7 +1467,7 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let stats = stats_spans(added, removed, p);
     if !stats.is_empty() {
         spans.push(Span::styled("  ", bar));
-        spans.extend(stats.into_iter().map(|s| Span::styled(s.content, s.style.bg(p.surface0))));
+        spans.extend(stats);
     }
     spans.push(Span::styled(HEADER_LEAD, bar));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1470,7 +1482,7 @@ const DIR_DOT_RESERVE: usize = 2;
 
 fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
-    let block = bordered("Files", app.focus == Focus::Files, p);
+    let block = bordered("Files", p);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1494,8 +1506,8 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
         .skip(app.file_scroll)
         .take(inner.height as usize)
         .map(|(i, row)| {
-            // The selected row fills with the cursor color, dimmed when the list is unfocused.
-            let fill = (i == app.file_cursor).then(|| p.cursor_bg(app.focus == Focus::Files));
+            // The selected row fills with the cursor color; an unfocused list bolds it alone.
+            let fill = RowCursor::at(i == app.file_cursor, app.focus == Focus::Files);
             let nest = "  ".repeat(row.depth);
             match &row.kind {
                 RowKind::Dir { expanded, has_change, .. } => {
@@ -1574,7 +1586,7 @@ struct FileRowSpec<'a> {
 fn file_row_item(
     row: &FileRowSpec<'_>,
     width: usize,
-    fill: Option<Color>,
+    fill: RowCursor,
     p: &Palette,
 ) -> ListItem<'static> {
     let FileRowSpec { indent, annotation, name, ignored, emphasis } = *row;
@@ -1769,7 +1781,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     if app.preview_active() {
         title.push_str(" · preview");
     }
-    let block = bordered(&title, app.focus == Focus::Diff, p);
+    let block = bordered(&title, p);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.note_diff_width(inner.width as usize);
@@ -2017,7 +2029,7 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
             let rule = if ruled { format!(" {}", "─".repeat(pad - 1)) } else { " ".repeat(pad) };
             line.push_span(Span::styled(rule, Style::default().fg(fg)));
         }
-        let bg = if cursor { pal.cursor_bg(focused) } else { pal.surface0 };
+        let bg = cursor.then(|| pal.cursor_bg(focused)).flatten().unwrap_or(pal.surface0);
         return vec![line.style(Style::default().bg(bg).add_modifier(Modifier::BOLD))];
     }
     // `0` is an unnumbered PR snippet row; file diffs are 1-based.
@@ -2034,8 +2046,10 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
         '+' => ("▌", pal.green),
         _ => (" ", pal.dim2),
     };
-    let row_bg = if cursor {
-        Some(pal.cursor_bg(focused))
+    // The focused cursor fills its row; an unfocused one keeps the row's own tint and goes bold.
+    let cursor_fill = cursor.then(|| pal.cursor_bg(focused)).flatten();
+    let row_bg = if cursor_fill.is_some() {
+        cursor_fill
     } else if selected {
         Some(pal.surface1)
     } else {
@@ -2048,7 +2062,7 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
 
     // Word emphasis brightens the changed words, unless the row's fill is a cursor or
     // selection bg, which wins for readability.
-    let emph_on = !cursor && !selected;
+    let emph_on = cursor_fill.is_none() && !selected;
     let emph_bg = match row.marker() {
         '-' => pal.emph_del_bg,
         '+' => pal.emph_ins_bg,
@@ -2113,10 +2127,11 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
             if let Some(pad) = width.checked_sub(line.width()).filter(|p| *p > 0) {
                 line.push_span(Span::raw(" ".repeat(pad)));
             }
-            match row_bg {
-                Some(bg) => line.style(Style::default().bg(bg)),
-                None => line,
+            let mut style = row_bg.map_or_else(Style::default, |bg| Style::default().bg(bg));
+            if cursor {
+                style = style.add_modifier(Modifier::BOLD);
             }
+            line.style(style)
         })
         .collect()
 }
@@ -2884,7 +2899,7 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::styled("  (stale)", Style::default().fg(p.red)));
             }
             // The list overlay is the active modal, so its row reads at full brightness.
-            selectable_row(p, spans, width, (i == app.list_cursor).then_some(p.surface2))
+            selectable_row(p, spans, width, RowCursor::at(i == app.list_cursor, true))
         })
         .collect();
     frame.render_widget(List::new(items), inner);
@@ -3111,7 +3126,7 @@ fn render_base_picker(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(p.dim2),
                 ));
             }
-            selectable_row(p, spans, width, (vi == bp.cursor).then_some(p.surface2))
+            selectable_row(p, spans, width, RowCursor::at(vi == bp.cursor, true))
         })
         .collect();
     frame.render_widget(List::new(items), list_area);
@@ -3177,7 +3192,7 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
         p,
         vec![theme_mark(p, follows), Span::styled("follow terminal", text_style(p))],
         inner.width as usize,
-        tp.on_terminal.then_some(p.surface2),
+        RowCursor::at(tp.on_terminal, true),
     );
     frame.render_widget(List::new([terminal_row]), Rect { height: 1, ..inner });
     let lists = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
@@ -3219,7 +3234,7 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
                     theme_mark(p, !follows && name == saved),
                     Span::styled(name, text_style(p)),
                 ];
-                selectable_row(p, spans, width, (active && i == cursor).then_some(p.surface2))
+                selectable_row(p, spans, width, RowCursor::at(active && i == cursor, true))
             })
             .collect();
         frame.render_widget(List::new(items), list_area);
@@ -3397,7 +3412,7 @@ fn render_commit_picker(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(p.dim2),
                 ),
             ];
-            selectable_row(p, spans, width, (i == cp.cursor).then_some(p.surface2))
+            selectable_row(p, spans, width, RowCursor::at(i == cp.cursor, true))
         })
         .collect();
     // A clipped list says so, like the search screen's results.
@@ -3653,7 +3668,7 @@ fn render_search_results(
                         emphasis: &[],
                     },
                     width,
-                    None,
+                    RowCursor::Off,
                     p,
                 )
             }
@@ -3662,7 +3677,7 @@ fn render_search_results(
             }
             SearchRow::File(i) => {
                 let hit = &s.results.files[*i];
-                let fill = (s.pick == *i).then_some(p.surface2);
+                let fill = RowCursor::at(s.pick == *i, true);
                 file_row_item(
                     &FileRowSpec {
                         indent: "",
@@ -3678,7 +3693,7 @@ fn render_search_results(
             }
             SearchRow::Code(i) => {
                 let hit = &s.results.code[*i];
-                let fill = (s.pick == *i).then_some(p.surface2);
+                let fill = RowCursor::at(s.pick == *i, true);
                 search_code_row(hit, width, fill, p)
             }
         })
@@ -3816,7 +3831,7 @@ fn search_preview_line(
             if pad > 0 {
                 line.push_span(Span::raw(" ".repeat(pad)));
             }
-            line.style(Style::default().bg(p.cursor_bg(true)))
+            line.style(Style::default().bg(p.sel_bg))
         }
     }
 }
@@ -3826,7 +3841,7 @@ fn search_preview_line(
 fn search_code_row(
     hit: &crate::search::CodeHit,
     width: usize,
-    fill: Option<Color>,
+    fill: RowCursor,
     p: &Palette,
 ) -> ListItem<'static> {
     let locator = format!("{:>5}: ", hit.line);
@@ -3998,25 +4013,44 @@ fn text_style(p: &Palette) -> Style {
     Style::default().fg(p.text)
 }
 
-/// A list row, highlighted with the shared selection fill (`surface2` + bold, full
-/// width) when `selected` — the same treatment the diff cursor uses, so every cursor
-/// in the UI reads the same. The fill is applied per span (with a trailing pad) so it
-/// spans the full width under the `List` widget, matching the diff's `Paragraph` rows.
+/// Whether a list row holds the cursor, and whether its list has focus.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowCursor {
+    Off,
+    Unfocused,
+    Focused,
+}
+
+impl RowCursor {
+    fn at(on: bool, focused: bool) -> Self {
+        match (on, focused) {
+            (false, _) => Self::Off,
+            (true, false) => Self::Unfocused,
+            (true, true) => Self::Focused,
+        }
+    }
+}
+
+/// A list row wearing the cursor the way the diff cursor does, so every cursor in the UI
+/// reads the same: bold, and on the full-width `sel_bg` fill where its list has focus. The fill
+/// is applied per span (with a trailing pad) so it spans the full width under the `List`
+/// widget, matching the diff's `Paragraph` rows.
 fn selectable_row(
     p: &Palette,
     mut spans: Vec<Span<'static>>,
     width: usize,
-    fill: Option<Color>,
+    cursor: RowCursor,
 ) -> ListItem<'static> {
-    if let Some(bg) = fill {
+    if cursor != RowCursor::Off {
+        let fill = p.cursor_bg(cursor == RowCursor::Focused);
         let used: usize = spans.iter().map(Span::width).sum();
-        if width > used {
+        if fill.is_some() && width > used {
             spans.push(Span::raw(" ".repeat(width - used)));
         }
         for s in &mut spans {
             // A span with its own background (the search match highlight) keeps it, so the
             // match still reads on the selected row; the rest take the selection fill.
-            if s.style.bg.is_none() {
+            if let Some(bg) = fill.filter(|_| s.style.bg.is_none()) {
                 s.style = s.style.bg(bg);
             }
             // Dim text lifts, so a selected row keeps its secondary parts: the file list's
@@ -4114,13 +4148,10 @@ fn render_overflow_scrollbar(
     );
 }
 
-fn bordered(title: &str, focused: bool, p: &Palette) -> Block<'static> {
-    // A focused pane gets a blue border; an unfocused one recedes to a surface tone.
-    let color = if focused { p.blue } else { p.surface2 };
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color))
-        .title(framed_title(title))
+fn bordered(title: &str, p: &Palette) -> Block<'static> {
+    // Lazygit's bold green border, the same on every frame; focus reads from the cursor fill.
+    let style = Style::default().fg(p.green).add_modifier(Modifier::BOLD);
+    Block::default().borders(Borders::ALL).border_style(style).title(framed_title(title))
 }
 
 /// Every block title breathes: one space each side, so the text never touches the border

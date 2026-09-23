@@ -127,17 +127,16 @@ pub struct Palette {
     /// The search match highlight: a warm fill behind a matched substring, legible over a
     /// plain row, a syntax-colored row, and the preview's banded hit line alike.
     pub match_hl: Color,
-    /// The text-selection highlight, live and settled: a cool fill distinct by hue from the
-    /// `surface1`/`surface2` row fills, so a selection reads inside a cursor row in any pane
+    /// The selected-line fill, lazygit's `selectedLineBgColor`: a readable blue tint behind the
+    /// cursor row, legible under syntax-colored text.
     pub sel_bg: Color,
 }
 
 impl Palette {
-    /// The cursor-row fill: the strongest-contrast surface (`surface2`) in the focused pane, a
-    /// step softer (`surface1`) when not, so which pane holds the cursor reads at a glance.
-    /// ("Strongest", not "brightest": light themes step surfaces toward black, not white.)
-    pub fn cursor_bg(&self, focused: bool) -> Color {
-        if focused { self.surface2 } else { self.surface1 }
+    /// The cursor-row fill, as lazygit does it: `sel_bg` in the focused pane, no fill when not
+    /// (the row goes bold instead), so which pane holds the cursor reads at a glance.
+    pub fn cursor_bg(&self, focused: bool) -> Option<Color> {
+        focused.then_some(self.sel_bg)
     }
 
     /// Lift a painted color onto a selection fill. The dim role (`dim2`) sits one surface

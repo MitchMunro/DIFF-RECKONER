@@ -1564,7 +1564,7 @@ fn page_down_rebinds_and_half_page_defaults_hold() {
 fn divider_drag_math_and_keyboard_clamps_follow_all_four_positions() {
     let r = edited_repo();
     let mut app = app_on(&r);
-    let area = Rect::new(0, 0, 100, 102); // a 100-cell split axis in either direction
+    let area = Rect::new(0, 0, 100, 104); // a 100-cell split axis in either direction
     let body = diff_reckoner::ui::body_rect(area, &app);
     let heights = vec![1usize; app.visible.len()];
     let keymap = Keymap::default();

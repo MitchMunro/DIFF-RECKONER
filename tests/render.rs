@@ -50,8 +50,8 @@ fn render_size(app: &App, width: u16, height: u16) -> Buffer {
     terminal.backend().buffer().clone()
 }
 
-/// Catppuccin surface2 — the shared selection/cursor fill.
-const SELECTION_BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x58, 0x5b, 0x70);
+/// Catppuccin `sel_bg` — the shared focused cursor fill.
+const SELECTION_BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x35, 0x3d, 0x7d);
 /// Catppuccin orange — the comment-editor caret block.
 const PEACH: ratatui::style::Color = ratatui::style::Color::Rgb(0xfa, 0xb3, 0x87);
 
@@ -479,30 +479,31 @@ fn a_changed_word_gets_the_emphasis_background() {
     assert!(found, "a changed word carries the emphasis background");
 }
 
-/// Catppuccin surface1 — the cursor fill of the pane that does not hold focus.
-const UNFOCUSED_CURSOR_BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x45, 0x47, 0x5a);
-
 #[test]
 fn the_diff_cursor_row_is_marked_from_either_pane() {
-    // The diff pane's cursor row fills like the file list's: brightest when the pane holds
-    // focus, a step softer when it does not. A hunk step driven from the file list moves this
+    // The diff pane's cursor row marks like the file list's: filled when the pane holds
+    // focus, bold with no fill when it does not. A hunk step driven from the file list moves this
     // cursor, so it has to be visible from there.
     let mut app = edited_app();
     app.focus = Focus::Diff;
     app.next_hunk();
-    let cursor_y = |app: &App| 2 + app.diff_cursor as u16; // border at y=1, first row at y=2
-    let fill = |app: &App, bg| {
+    let cursor_y = |app: &App| 4 + app.diff_cursor as u16; // border at y=3, first row at y=4
+    let count = |app: &App, mark: fn(&ratatui::buffer::Cell) -> bool| {
         let buf = render_buffer(app);
         let y = cursor_y(app);
-        (1..40u16).filter(|&x| buf.cell((x, y)).is_some_and(|c| c.bg == bg)).count()
+        (1..40u16).filter(|&x| buf.cell((x, y)).is_some_and(mark)).count()
     };
 
-    assert!(fill(&app, SELECTION_BG) > 10, "the focused diff fills its cursor row with surface2");
+    assert!(
+        count(&app, |c| c.bg == SELECTION_BG) > 10,
+        "the focused diff fills its cursor row with sel_bg"
+    );
 
     app.focus = Focus::Files;
+    assert_eq!(count(&app, |c| c.bg == SELECTION_BG), 0, "unfocused, the fill goes");
     assert!(
-        fill(&app, UNFOCUSED_CURSOR_BG) > 10,
-        "and still marks it, a step softer, while the file list holds focus"
+        count(&app, |c| c.modifier.contains(ratatui::style::Modifier::BOLD)) > 10,
+        "and the row still marks it in bold while the file list holds focus"
     );
 }
 
@@ -510,11 +511,11 @@ fn the_diff_cursor_row_is_marked_from_either_pane() {
 fn the_selected_file_row_fills_with_the_shared_selection_color() {
     let app = edited_app(); // one file, file_cursor = 0, Files focused
     let buf = render_buffer(&app);
-    // Files pane: right 32% of 140 cols; its border is at y=1, first content row at y=2.
+    // Files pane: right 32% of 140 cols; its border is at y=3, first content row at y=4.
     let files_x0 = 140 - 140 * 32 / 100 + 1;
     let selected =
-        (files_x0..139).filter(|&x| buf.cell((x, 2)).is_some_and(|c| c.bg == SELECTION_BG)).count();
-    assert!(selected > 10, "the selected file row fills wide with surface2: {selected} cells");
+        (files_x0..139).filter(|&x| buf.cell((x, 4)).is_some_and(|c| c.bg == SELECTION_BG)).count();
+    assert!(selected > 10, "the selected file row fills wide with sel_bg: {selected} cells");
 }
 
 #[test]
@@ -522,7 +523,7 @@ fn a_hidden_navigator_gives_the_read_pane_the_whole_body() {
     let mut app = edited_app();
     app.focus = Focus::Diff;
     app.next_hunk();
-    let cursor_y = 2 + app.diff_cursor as u16;
+    let cursor_y = 4 + app.diff_cursor as u16;
     let fill = |app: &App| {
         let buf = render_buffer(app);
         (1..139u16)
@@ -537,7 +538,7 @@ fn a_hidden_navigator_gives_the_read_pane_the_whole_body() {
     let hidden_fill = fill(&app);
     assert!(
         hidden_fill > visible_fill && hidden_fill > 120,
-        "the cursor row fills the whole body with surface2: {hidden_fill} vs {visible_fill}"
+        "the cursor row fills the whole body with sel_bg: {hidden_fill} vs {visible_fill}"
     );
     let out = render(&app);
     assert!(out.contains("z show"), "the collapsed footer names the way back");
@@ -573,17 +574,17 @@ fn the_header_totals_the_scope_and_hides_them_at_zero() {
     r.write("untracked.rs", "one\ntwo\n");
     let app = app_on(&r);
 
-    // 64 columns is the exact fit (the tab strip ends in the two-column reserved
+    // 66 columns is the exact fit (64 plus the box sides) (the tab strip ends in the two-column reserved
     // indicator cell). The totals' `−` is multi-byte, so this breaks if the header
     // measures bytes instead of display width.
-    let header = render_at(&app, 64).lines().next().unwrap().to_string();
+    let header = render_at(&app, 66).lines().nth(1).unwrap().to_string();
     assert!(header.contains("2 changed  +3 −1"), "count, then the totals:\n{header}");
 
     let clean = Repo::init();
     clean.write("clean.rs", "same\n");
     clean.commit_all("init");
     let app = app_on(&clean);
-    let header = render_at(&app, 80).lines().next().unwrap().to_string();
+    let header = render_at(&app, 80).lines().nth(1).unwrap().to_string();
     assert!(header.contains("0 changed"), "the bare count remains:\n{header}");
     assert!(!header.contains('+'), "an empty changeset shows no totals:\n{header}");
 }
@@ -928,14 +929,14 @@ fn header_clicks_map_to_the_scope_chip() {
     // Scan the header row instead of hardcoding columns, so the test survives changes
     // to the label text.
     let scope: Vec<u16> = (0..AREA.width)
-        .filter(|&c| ui::hit_header(AREA, &app, app.keymap(), c, 0) == Some(HeaderHit::Scope))
+        .filter(|&c| ui::hit_header(AREA, &app, app.keymap(), c, 1) == Some(HeaderHit::Scope))
         .collect();
 
     assert!(!scope.is_empty(), "scope chip is clickable");
 
     let gap = scope.iter().max().unwrap() + 1;
     assert_eq!(
-        ui::hit_header(AREA, &app, app.keymap(), gap, 0),
+        ui::hit_header(AREA, &app, app.keymap(), gap, 1),
         None,
         "the space right of the chip is inert"
     );
@@ -950,11 +951,11 @@ fn header_clicks_map_to_the_scope_chip() {
 fn file_and_diff_clicks_map_to_row_indices() {
     let app = edited_app();
     // Right pane: the first file row maps to index 0; clicking past the list misses.
-    assert_eq!(ui::hit_file(AREA, &app, 120, 2, app.file_rows.len(), 0), Some(0));
-    assert_eq!(ui::hit_file(AREA, &app, 120, 9, app.file_rows.len(), 0), None);
+    assert_eq!(ui::hit_file(AREA, &app, 120, 4, app.file_rows.len(), 0), Some(0));
+    assert_eq!(ui::hit_file(AREA, &app, 120, 11, app.file_rows.len(), 0), None);
     // With the list scrolled down, the top visible row maps to that scrolled-to index.
-    assert_eq!(ui::hit_file(AREA, &app, 120, 2, 50, 7), Some(7));
-    assert_eq!(ui::hit_file(AREA, &app, 120, 3, 50, 7), Some(8));
+    assert_eq!(ui::hit_file(AREA, &app, 120, 4, 50, 7), Some(7));
+    assert_eq!(ui::hit_file(AREA, &app, 120, 5, 50, 7), Some(8));
     // The wheel routes by pointer: a column in the navigator is "in" the file list,
     // one in the read pane is not.
     assert!(ui::in_files_pane(AREA, &app, 120, 3));
@@ -962,15 +963,15 @@ fn file_and_diff_clicks_map_to_row_indices() {
     // Left pane: diff rows map top-down to diff-line indices.
     assert!(app.visible.len() > 1);
     let heights = ui::diff_row_heights(&app, AREA);
-    assert_eq!(ui::hit_diff(AREA, &app, 10, 2, &heights, 0), Some(0));
-    assert_eq!(ui::hit_diff(AREA, &app, 10, 3, &heights, 0), Some(1));
+    assert_eq!(ui::hit_diff(AREA, &app, 10, 4, &heights, 0), Some(0));
+    assert_eq!(ui::hit_diff(AREA, &app, 10, 5, &heights, 0), Some(1));
     // With a nonzero scroll and wrapped (multi-row) lines, the click must skip the
     // scrolled-off rows and account for each visible row's display height. Rows are
-    // 2 tall each; diff_scroll=1 puts row index 1 at the top of the pane (inner.y == 2).
+    // 2 tall each; diff_scroll=1 puts row index 1 at the top of the pane (inner.y == 4).
     let tall = [2usize, 2, 2, 2];
-    assert_eq!(ui::hit_diff(AREA, &app, 10, 2, &tall, 1), Some(1)); // top visible row
-    assert_eq!(ui::hit_diff(AREA, &app, 10, 3, &tall, 1), Some(1)); // its second display row
-    assert_eq!(ui::hit_diff(AREA, &app, 10, 4, &tall, 1), Some(2)); // next logical row
+    assert_eq!(ui::hit_diff(AREA, &app, 10, 4, &tall, 1), Some(1)); // top visible row
+    assert_eq!(ui::hit_diff(AREA, &app, 10, 5, &tall, 1), Some(1)); // its second display row
+    assert_eq!(ui::hit_diff(AREA, &app, 10, 6, &tall, 1), Some(2)); // next logical row
 }
 
 #[test]
@@ -1065,15 +1066,15 @@ fn navigator_layout_rects_cover_every_position_and_tiny_axis() {
     assert_eq!((0..5).filter(|&col| ui::in_diff_pane(five, &app, col, row)).count(), 3);
 
     app.navigator_position = NavigatorPosition::Top;
-    let eight = Rect::new(0, 0, 10, 10); // body height 8
+    let eight = Rect::new(0, 0, 10, 12); // body height 8
     let col = ui::body_rect(eight, &app).x;
-    assert_eq!((1..9).filter(|&row| ui::in_files_pane(eight, &app, col, row)).count(), 3);
-    assert_eq!((1..9).filter(|&row| ui::in_diff_pane(eight, &app, col, row)).count(), 5);
+    assert_eq!((3..11).filter(|&row| ui::in_files_pane(eight, &app, col, row)).count(), 3);
+    assert_eq!((3..11).filter(|&row| ui::in_diff_pane(eight, &app, col, row)).count(), 5);
 
-    let seven = Rect::new(0, 0, 10, 7); // body height 5: navigator gets floor(5 / 2)
+    let seven = Rect::new(0, 0, 10, 9); // body height 5: navigator gets floor(5 / 2)
     let col = ui::body_rect(seven, &app).x;
-    assert_eq!((1..6).filter(|&row| ui::in_files_pane(seven, &app, col, row)).count(), 2);
-    assert_eq!((1..6).filter(|&row| ui::in_diff_pane(seven, &app, col, row)).count(), 3);
+    assert_eq!((3..8).filter(|&row| ui::in_files_pane(seven, &app, col, row)).count(), 2);
+    assert_eq!((3..8).filter(|&row| ui::in_diff_pane(seven, &app, col, row)).count(), 3);
 }
 
 #[test]
@@ -2120,17 +2121,17 @@ fn based_app() -> (Repo, App) {
 #[test]
 fn the_branch_header_names_the_base_and_its_click_opens_the_picker() {
     let (_repo, mut app) = based_app();
-    let line0 = render(&app).lines().next().unwrap().to_string();
+    let line0 = render(&app).lines().nth(1).unwrap().to_string();
     assert!(line0.contains("[branch] vs main"), "the bare base name follows the scope: {line0}");
 
     let base: Vec<u16> = (0..AREA.width)
-        .filter(|&c| ui::hit_header(AREA, &app, app.keymap(), c, 0) == Some(HeaderHit::Base))
+        .filter(|&c| ui::hit_header(AREA, &app, app.keymap(), c, 1) == Some(HeaderHit::Base))
         .collect();
     assert!(!base.is_empty(), "the base label is clickable");
     let click = MouseEvent {
         kind: MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
         column: base[0],
-        row: 0,
+        row: 1,
         modifiers: KeyModifiers::NONE,
     };
     let keymap = app.keymap().clone();
@@ -2254,7 +2255,7 @@ fn a_named_rev_paints_the_spelling_and_abbrev() {
     diff_reckoner::git::write_base_pick(r.path(), "HEAD~1").unwrap();
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
-    let line0 = render(&app).lines().next().unwrap().to_string();
+    let line0 = render(&app).lines().nth(1).unwrap().to_string();
     let short = diff_reckoner::git::abbreviate_oid(&parent);
     assert!(
         line0.contains(&format!("vs HEAD~1 ({short})")),
@@ -2276,7 +2277,7 @@ fn a_sha_pick_paints_once() {
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
     let short = diff_reckoner::git::abbreviate_oid(&parent);
-    let line0 = render(&app).lines().next().unwrap().to_string();
+    let line0 = render(&app).lines().nth(1).unwrap().to_string();
     assert!(line0.contains(&format!("vs {short}")), "a SHA spelling paints once: {line0}");
     assert!(
         !line0.contains(&format!("vs {short} (")),
@@ -2285,7 +2286,7 @@ fn a_sha_pick_paints_once() {
 
     diff_reckoner::git::write_base_pick(r.path(), &short).unwrap();
     app.reload().unwrap();
-    let line0 = render(&app).lines().next().unwrap().to_string();
+    let line0 = render(&app).lines().nth(1).unwrap().to_string();
     assert!(
         line0.contains(&format!("vs {short}")),
         "an abbreviated SHA spelling paints once: {line0}"
@@ -2308,7 +2309,7 @@ fn a_flag_named_rev_paints_the_same_form() {
     let parent = r.git(&["rev-parse", "HEAD~1"]).trim().to_string();
     let mut app = App::new(r.path_buf(), Scope::Branch, Some("HEAD~1".to_string()));
     app.reload().unwrap();
-    let line0 = render(&app).lines().next().unwrap().to_string();
+    let line0 = render(&app).lines().nth(1).unwrap().to_string();
     let short = diff_reckoner::git::abbreviate_oid(&parent);
     assert!(
         line0.contains(&format!("vs HEAD~1 ({short})")),
@@ -2382,7 +2383,7 @@ fn a_skipped_named_rev_uses_the_stored_spelling() {
     r.git(&["checkout", "-q", "-b", "feature"]);
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
-    let line0 = render(&app).lines().next().unwrap().to_string();
+    let line0 = render(&app).lines().nth(1).unwrap().to_string();
     assert!(
         line0.contains("vs main · HEAD~1 missing"),
         "a skipped non-branch spelling uses the stored spelling: {line0}"
@@ -2399,7 +2400,7 @@ fn a_skipped_pick_warns_beside_the_resolved_base() {
     r.git(&["checkout", "-q", "-b", "feature"]);
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
-    let line0 = render(&app).lines().next().unwrap().to_string();
+    let line0 = render(&app).lines().nth(1).unwrap().to_string();
     assert!(line0.contains("vs main · gone missing"), "the dormant pick reads as skipped: {line0}");
 }
 
@@ -2413,7 +2414,7 @@ fn without_a_resolving_base_the_header_reads_no_base() {
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
     let frame = render(&app);
-    let line0 = frame.lines().next().unwrap().to_string();
+    let line0 = frame.lines().nth(1).unwrap().to_string();
     assert!(line0.contains("[branch] no base"), "the empty state is named: {line0}");
     assert!(frame.contains("B base"), "the footer advertises the picker");
 }
@@ -2430,7 +2431,7 @@ fn a_local_only_repo_has_its_main_as_the_base() {
     r.commit_all("edit");
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
-    let line0 = render(&app).lines().next().unwrap().to_string();
+    let line0 = render(&app).lines().nth(1).unwrap().to_string();
     assert!(line0.contains("[branch] vs main"), "the local main is the base: {line0}");
     assert!(!line0.contains("missing"), "nothing is skipped: {line0}");
     assert!(line0.contains("1 changed"), "the branch diffs against it: {line0}");
@@ -2439,7 +2440,7 @@ fn a_local_only_repo_has_its_main_as_the_base() {
     r.git(&["checkout", "-q", "main"]);
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
-    let line0 = render(&app).lines().next().unwrap().to_string();
+    let line0 = render(&app).lines().nth(1).unwrap().to_string();
     assert!(line0.contains("[branch] vs main"), "{line0}");
 }
 
@@ -2453,7 +2454,7 @@ fn a_dormant_pick_shows_beside_the_empty_state() {
     r.git(&["checkout", "-q", "-b", "feature"]);
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
-    let line0 = render(&app).lines().next().unwrap().to_string();
+    let line0 = render(&app).lines().nth(1).unwrap().to_string();
     assert!(
         line0.contains("no base · gone missing"),
         "a dormant choice never reads as never-chosen: {line0}"
@@ -2475,7 +2476,7 @@ fn a_named_rev_clips_the_spelling_and_keeps_the_sha() {
     diff_reckoner::git::write_base_pick(r.path(), &long).unwrap();
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
-    let line0 = dump(&render_size(&app, 80, 20)).lines().next().unwrap().to_string();
+    let line0 = dump(&render_size(&app, 80, 20)).lines().nth(1).unwrap().to_string();
     let short = diff_reckoner::git::abbreviate_oid(&parent);
     assert!(line0.contains(&format!("({short})")), "the SHA marker survives the clip: {line0}");
     assert!(line0.contains('…'), "the spelling truncates: {line0}");
@@ -2495,7 +2496,7 @@ fn an_overlong_base_name_truncates_with_an_ellipsis() {
     r.commit_all("edit");
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
-    let line0 = dump(&render_size(&app, 80, 20)).lines().next().unwrap().to_string();
+    let line0 = dump(&render_size(&app, 80, 20)).lines().nth(1).unwrap().to_string();
     assert!(line0.contains("vs feature/x"), "the name paints up to the fit: {line0}");
     assert!(line0.contains('…'), "the overflow truncates with a trailing ellipsis: {line0}");
     assert!(line0.contains("1 changed"), "the right-aligned stats survive the long name: {line0}");
@@ -2520,10 +2521,10 @@ fn a_narrow_header_never_maps_a_click_outside_the_painted_base() {
     // claim is one unbroken run.
     for width in [40u16, 56, 72] {
         let area = Rect { x: 0, y: 0, width, height: 12 };
-        let line0 = dump(&render_size(&app, width, 12)).lines().next().unwrap().to_string();
+        let line0 = dump(&render_size(&app, width, 12)).lines().nth(1).unwrap().to_string();
         let cells: Vec<char> = line0.chars().collect();
         let hits: Vec<u16> = (0..width)
-            .filter(|&c| ui::hit_header(area, &app, app.keymap(), c, 0) == Some(HeaderHit::Base))
+            .filter(|&c| ui::hit_header(area, &app, app.keymap(), c, 1) == Some(HeaderHit::Base))
             .collect();
         let Some((&first, &last)) = hits.first().zip(hits.last()) else {
             // Too narrow for even one column of the name: the base left the header whole,
@@ -2564,7 +2565,7 @@ fn an_overlong_skipped_tail_never_evicts_the_base_name() {
     r.commit_all("edit");
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
-    let line0 = dump(&render_size(&app, 80, 20)).lines().next().unwrap().to_string();
+    let line0 = dump(&render_size(&app, 80, 20)).lines().nth(1).unwrap().to_string();
     assert!(line0.contains("vs main"), "the resolved name keeps first claim: {line0}");
     assert!(line0.contains("· feature/x"), "the skipped tail paints in what remains: {line0}");
     assert!(line0.contains('…'), "the tail truncates with a trailing ellipsis: {line0}");
@@ -2640,10 +2641,8 @@ fn the_text_selection_highlights_the_dragged_span() {
     let (_repo, mut app) = selection_app();
     let area = Rect::new(0, 0, 140, 40);
     let inner = ui::read_inner_rect(area, &app);
-    let sel_bg = app.palette().sel_bg;
-    // The selection fill is its own slot, distinct by hue from the cursor fills, so a
-    // selection reads inside a cursor row. Park the cursor on the fully
-    // selected middle row so its cells still assert the selection fill won.
+    // The selection is reverse video, like a terminal's own, so it reads over any fill. Park
+    // the cursor on the fully selected middle row so its cells still assert the selection.
     app.diff_cursor = 1;
 
     // `beta` on row 0 through char 1 (`本`) of row 2: a three-row stream selection.
@@ -2656,21 +2655,23 @@ fn the_text_selection_highlights_the_dragged_span() {
         count: 1,
     };
     let buf = render_buffer(&app);
-    let bg = |x: u16, y: u16| buf.cell((x, y)).unwrap().style().bg;
+    let sel = |x: u16, y: u16| {
+        buf.cell((x, y)).unwrap().modifier.contains(ratatui::style::Modifier::REVERSED)
+    };
     // The `b` of beta is selected; the chars before the anchor are not — the first row runs
     // from its start character, not whole.
-    assert_eq!(bg(inner.x + 5 + 6, inner.y), Some(sel_bg));
-    assert_ne!(bg(inner.x + 5, inner.y), Some(sel_bg));
-    assert_ne!(bg(inner.x + 5 + 5, inner.y), Some(sel_bg));
+    assert!(sel(inner.x + 5 + 6, inner.y));
+    assert!(!sel(inner.x + 5, inner.y));
+    assert!(!sel(inner.x + 5 + 5, inner.y));
     // Row 1 lies whole between the endpoints: tab expansion through its last char.
-    assert_eq!(bg(inner.x + 5, inner.y + 1), Some(sel_bg));
-    assert_eq!(bg(inner.x + 5 + 6, inner.y + 1), Some(sel_bg));
+    assert!(sel(inner.x + 5, inner.y + 1));
+    assert!(sel(inner.x + 5 + 6, inner.y + 1));
     // Row 2 runs up to its end character: both wide glyphs (each asserted at its first
     // cell — the buffer diff skips a wide char's hidden continuation cell), and nothing
     // past them.
-    assert_eq!(bg(inner.x + 5, inner.y + 2), Some(sel_bg));
-    assert_eq!(bg(inner.x + 5 + 2, inner.y + 2), Some(sel_bg));
-    assert_ne!(bg(inner.x + 5 + 4, inner.y + 2), Some(sel_bg));
+    assert!(sel(inner.x + 5, inner.y + 2));
+    assert!(sel(inner.x + 5 + 2, inner.y + 2));
+    assert!(!sel(inner.x + 5 + 4, inner.y + 2));
 }
 
 // --- Commit picker and the commits header --------------------
@@ -2923,7 +2924,7 @@ fn follow_terminal_paints_dim_text_faint_never_near_black() {
 }
 
 #[test]
-fn follow_terminal_marks_the_cursor_in_reverse_video_on_a_dark_terminal() {
+fn follow_terminal_marks_the_cursor_in_ansi_blue_like_lazygit() {
     use diff_reckoner::app::Tab;
     use ratatui::style::{Color, Modifier};
     let r = Repo::init();
@@ -2937,19 +2938,20 @@ fn follow_terminal_marks_the_cursor_in_reverse_video_on_a_dark_terminal() {
     app.focus = Focus::Diff;
     let buf = render_buffer(&app);
     assert!(buf.content.iter().all(|c| c.bg != diff_reckoner::theme::INVERSE));
-    // The focused cursor row is one reversed bar of plain default text.
+    // The focused cursor row is one bar on the terminal's own blue, lazygit's default.
     let out = dump(&buf);
     let y = out.lines().position(|l| l.contains("let a = 1;")).expect("the cursor row") as u16;
     let x = out.lines().nth(y as usize).unwrap().chars().position(|c| c == 'l').unwrap() as u16;
     for cell in [buf.cell((x, y)).unwrap(), buf.cell((x + 4, y)).unwrap()] {
-        assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset), "{cell:?}");
-        assert!(cell.modifier.contains(Modifier::REVERSED), "{cell:?}");
+        assert_eq!(cell.bg, Color::Blue, "{cell:?}");
     }
-    // The unfocused file-list cursor takes the soft fill, not bright black.
+    // The unfocused file-list cursor takes no fill, only bold.
     let files_row = out.lines().position(|l| l.contains("M hello.rs")).unwrap() as u16;
     let files_x =
         out.lines().nth(files_row as usize).unwrap().chars().position(|c| c == 'M').unwrap();
-    assert_eq!(buf.cell((files_x as u16 + 2, files_row)).unwrap().bg, Color::Black);
+    let cell = buf.cell((files_x as u16 + 2, files_row)).unwrap();
+    assert_eq!(cell.bg, Color::Reset, "{cell:?}");
+    assert!(cell.modifier.contains(Modifier::BOLD), "{cell:?}");
 }
 
 #[test]
