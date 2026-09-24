@@ -194,7 +194,7 @@ fn run_editor(
         Ok(command) => command,
         // Two causes, and the second would otherwise be told to set what it set.
         Err(editor::NoEditor::Unset) => {
-            app.status = "set `editor` in the plugin config, or $EDITOR".into();
+            app.status = "set `editor` in config.toml, or $EDITOR".into();
             return Ok(());
         }
         Err(editor::NoEditor::NamesNoProgram) => {
@@ -824,6 +824,13 @@ fn event_loop(
             if app.editor_request.is_some() {
                 run_editor(terminal, app, painted_frame.editor(), kbd, &mut open_editors)?;
             }
+            // An export wrote its file: open it. The write already stands, so a failure only
+            // adds to the status that reports it.
+            if let Some(path) = app.open_request.take()
+                && let Err(e) = browser::open(&path)
+            {
+                app.status = format!("{}, but could not open it: {e}", app.status);
+            }
             if app.should_quit {
                 break;
             }
@@ -1267,6 +1274,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             // selected file.
             K::Edit => app.start_edit(),
             K::Delete if app.focus == Focus::Diff => app.ask_delete_comment(),
+            K::Export => app.export_to_file(),
             K::Copy => {
                 app.export(&Clipboard);
             }

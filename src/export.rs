@@ -1,41 +1,78 @@
-//! Formatting comments and exporting them to the clipboard.
+//! Formatting comments and exporting them to the clipboard or the export file.
 //!
-//! A comment becomes a block of `location`, the line it annotates, then the text. Export
-//! never consumes: a comment lasts until something removes it from its file (design doc §8).
+//! The export is a note to an agent: a preamble saying what the comments are and what to do with
+//! them, then each file's comments as their tag lines in a fenced block of the file around them.
+//! Export never consumes: a comment lasts until something removes it from its file (design doc
+//! §8).
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 
 use crate::model::Comment;
+use crate::review::TAG;
 
-/// One comment as its export block: location, the annotated line, then text. A comment that
-/// ends its file annotates no line, so its block has no snippet.
+/// One comment as its export block: the tag lines' location, then the tag lines with the file's
+/// context either side, verbatim, fenced in the file's language.
 pub fn format_comment(comment: &Comment) -> String {
-    let text = normalize_text(&comment.display_text());
-    match &comment.anchor {
-        Some(line) => format!("{}\n{line}\n{text}", comment.location()),
-        None => format!("{}\n{text}", comment.location()),
-    }
-}
-
-/// Comment text for export: drop `\r`, trim trailing space per line, and drop blank
-/// lines so a multi-line comment can never introduce the blank-line block separator.
-fn normalize_text(text: &str) -> String {
-    text.replace('\r', "")
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| !line.trim().is_empty())
+    let label = if comment.start == comment.end {
+        format!("Line {}:", comment.start)
+    } else {
+        format!("Lines {}-{}:", comment.start, comment.end)
+    };
+    let body = [&comment.before, &comment.lines, &comment.after]
+        .into_iter()
+        .flatten()
+        .map(|line| line.trim_end_matches('\r'))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    let language = Path::new(&comment.file)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let fence = fence_for(&body);
+    format!("{label}\n{fence}{language}\n{body}\n{fence}")
 }
 
-/// Many comments, sorted by file then start line, one blank line between blocks.
+/// A backtick fence one longer than any run in `body`, so no line of the file can close it.
+fn fence_for(body: &str) -> String {
+    let longest = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    "`".repeat(longest.max(2) + 1)
+}
+
+/// What the agent is asked to do. The `[DELETED]` line shows only when a comment carries one.
+fn preamble(comments: &[&Comment]) -> String {
+    let mut out = match comments.len() {
+        1 => format!(
+            "Address the review comment below. Each comment line starts with `{TAG}`.\n\
+             Once you've addressed it, delete its lines. If you won't act on it, leave it and say why."
+        ),
+        n => format!(
+            "Address the {n} review comments below. Each comment line starts with `{TAG}`.\n\
+             Once you've addressed a comment, delete its lines. If you won't act on one, leave it \
+             and say why."
+        ),
+    };
+    if comments.iter().any(|c| c.deleted.is_some()) {
+        out.push_str("\n`[DELETED: (...)]` quotes the start of a removed line.");
+    }
+    out
+}
+
+/// Every comment: the preamble, then a `## path` section per file, its comments in line order.
 pub fn format_all(comments: &[&Comment]) -> String {
     let mut sorted = comments.to_vec();
     sorted.sort_by(|a, b| a.file.cmp(&b.file).then(a.start.cmp(&b.start)));
-    sorted.iter().map(|c| format_comment(c)).collect::<Vec<_>>().join("\n\n")
+    let mut parts = vec![preamble(&sorted)];
+    for (i, c) in sorted.iter().enumerate() {
+        if i == 0 || sorted[i - 1].file != c.file {
+            parts.push(format!("## {}", c.file));
+        }
+        parts.push(format_comment(c));
+    }
+    parts.join("\n\n")
 }
 
 /// A destination comments can be exported to. Export succeeds or errors as a whole.
@@ -102,6 +139,45 @@ impl ExportTarget for Clipboard {
     }
 }
 
+/// The export file, relative to the worktree root: short enough to type into an agent's prompt
+/// where there is no clipboard to paste the comments themselves (design doc §8).
+pub const EXPORT_FILE: &str = ".diff-reckoner/review.md";
+
+/// The export file under one worktree, overwritten whole on every export. Its directory
+/// carries a `*` `.gitignore`, so neither the file nor the ignore file is ever a change.
+#[derive(Debug)]
+pub struct ReviewFile {
+    pub repo: PathBuf,
+}
+
+impl ExportTarget for ReviewFile {
+    fn label(&self) -> &'static str {
+        "file"
+    }
+
+    fn success_message(&self, count: usize) -> String {
+        format!("wrote {} to {EXPORT_FILE}", counted_comments(count))
+    }
+
+    fn failure_message(&self) -> String {
+        format!("could not write {EXPORT_FILE}")
+    }
+
+    fn export(&self, text: &str) -> Result<()> {
+        let path = self.repo.join(EXPORT_FILE);
+        let dir = path.parent().context("export path has a directory")?;
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        // Written once and then left alone, so a reviewer's own edit to it stands.
+        let ignore = dir.join(".gitignore");
+        if !ignore.exists() {
+            std::fs::write(&ignore, "*\n")
+                .with_context(|| format!("writing {}", ignore.display()))?;
+        }
+        std::fs::write(&path, format!("{text}\n"))
+            .with_context(|| format!("writing {}", path.display()))
+    }
+}
+
 /// The first clipboard tool the `present` predicate accepts, preserving list order.
 fn select_tool(
     tools: &'static [(&'static str, &'static [&'static str])],
@@ -113,7 +189,8 @@ fn select_tool(
 #[cfg(test)]
 mod tests {
     use super::{
-        CLIPBOARD_TOOLS, Clipboard, ExportTarget, format_all, format_comment, select_tool,
+        CLIPBOARD_TOOLS, Clipboard, EXPORT_FILE, ExportTarget, ReviewFile, format_all,
+        format_comment, select_tool,
     };
     use crate::model::Comment;
 
@@ -139,62 +216,81 @@ mod tests {
         assert_eq!(Clipboard.success_message(2), "copied 2 comments");
     }
 
-    fn comment(file: &str, start: u32, end: u32, anchor: Option<&str>, text: &str) -> Comment {
-        Comment {
-            file: file.into(),
-            start,
-            end,
-            text: text.into(),
-            deleted: None,
-            anchor: anchor.map(Into::into),
-            before: Vec::new(),
-            after: Vec::new(),
-        }
+    fn parsed(path: &str, content: &str) -> Vec<Comment> {
+        crate::review::parse(path, content)
     }
 
     #[test]
-    fn block_is_location_annotated_line_text() {
-        let c = comment(
-            "extruct/core/llm_registry.py",
-            40,
-            41,
-            Some("from .x import y"),
-            "this import path\nlooks wrong",
-        );
+    fn a_block_fences_the_tag_lines_in_their_context() {
+        let src = "fn a() {\n    one();\n    // [- REVIEW -] held across an await\n    // [- REVIEW -] deadlocks on retry\n    two().await;\n}\n";
+        let c = &parsed("src/a.rs", src)[0];
         assert_eq!(
-            format_comment(&c),
-            "extruct/core/llm_registry.py:40-41\nfrom .x import y\nthis import path\nlooks wrong"
+            format_comment(c),
+            "Lines 3-4:\n```rs\nfn a() {\n    one();\n    // [- REVIEW -] held across an await\n    // [- REVIEW -] deadlocks on retry\n    two().await;\n}\n```"
         );
     }
 
     #[test]
-    fn a_deleted_line_comment_leads_with_its_marker() {
-        let mut c = comment("a.rs", 38, 38, Some("    finish();"), "still needed");
-        c.deleted = Some("cleanup();".into());
+    fn context_stops_at_five_lines_and_the_files_edges() {
+        let src: String = (1..=20).map(|n| format!("l{n}\n")).collect::<Vec<_>>().concat();
+        let src = src.replace("l10\n", "# [- REVIEW -] here\nl10\n");
+        let block = format_comment(&parsed("x.py", &src)[0]);
+        assert!(block.starts_with("Line 10:\n```py\nl5\n"), "{block}");
+        assert!(block.ends_with("l14\n```"), "{block}");
+        let block = format_comment(&parsed("x", "# [- REVIEW -] top\nonly\n")[0]);
+        assert_eq!(block, "Line 1:\n```\n# [- REVIEW -] top\nonly\n```");
+    }
+
+    #[test]
+    fn a_fence_outruns_any_backticks_in_the_file() {
+        let block = format_comment(&parsed("n.md", "[- REVIEW -] fix\n```sh\nls\n```\n")[0]);
+        assert!(block.starts_with("Line 1:\n````md\n"), "{block}");
+        assert!(block.ends_with("\n````"), "{block}");
+    }
+
+    #[test]
+    fn crlf_files_export_without_carriage_returns() {
+        let block = format_comment(&parsed("a.rs", "// [- REVIEW -] x\r\nfoo();\r\n")[0]);
+        assert!(!block.contains('\r'), "{block:?}");
+    }
+
+    #[test]
+    fn all_leads_with_the_preamble_and_groups_by_file_in_line_order() {
+        let b = parsed("b.rs", "// [- REVIEW -] two\nb();\n");
+        let a = parsed("a.rs", "// [- REVIEW -] earlier\na();\n\n// [- REVIEW -] later\nz();\n");
+        let out = format_all(&[&b[0], &a[1], &a[0]]);
+        let (preamble, rest) = out.split_once("\n\n").unwrap();
         assert_eq!(
-            format_comment(&c),
-            "a.rs:38\n    finish();\n[DELETED: (cleanup();)] still needed"
+            preamble,
+            "Address the 3 review comments below. Each comment line starts with `[- REVIEW -]`.\n\
+             Once you've addressed a comment, delete its lines. If you won't act on one, leave it \
+             and say why."
         );
+        let headings: Vec<&str> = rest.lines().filter(|l| l.starts_with("## ")).collect();
+        assert_eq!(headings, ["## a.rs", "## b.rs"]);
+        assert!(rest.find("earlier").unwrap() < rest.find("Line 4:").unwrap());
+        assert!(!out.contains("DELETED"), "no deleted-line comment, no note about one");
     }
 
     #[test]
-    fn a_comment_ending_the_file_has_no_snippet() {
-        let c = comment("a.rs", 9, 9, None, "trailing");
-        assert_eq!(format_comment(&c), "a.rs:9\ntrailing");
+    fn one_comment_reads_in_the_singular_and_a_deleted_one_adds_its_note() {
+        let c = parsed("a.rs", "// [- REVIEW -] [DELETED: (cleanup();)] still needed\nfinish();\n");
+        let out = format_all(&[&c[0]]);
+        assert!(out.starts_with("Address the review comment below."), "{out}");
+        assert!(out.contains("Once you've addressed it, delete its lines."), "{out}");
+        assert!(out.contains("\n`[DELETED: (...)]` quotes the start of a removed line.\n\n"));
+        assert!(out.contains("// [- REVIEW -] [DELETED: (cleanup();)] still needed\n"), "{out}");
     }
 
     #[test]
-    fn multiline_text_keeps_breaks_but_drops_blank_lines() {
-        let c = comment("a.rs", 1, 1, Some("x"), "first line\n\n  \nsecond line\n");
-        assert_eq!(format_comment(&c), "a.rs:1\nx\nfirst line\nsecond line");
-    }
-
-    #[test]
-    fn all_sorts_by_file_then_start_with_blank_separator() {
-        let b = comment("b.rs", 5, 5, Some("x"), "two");
-        let a2 = comment("a.rs", 20, 20, Some("y"), "later");
-        let a1 = comment("a.rs", 3, 3, Some("z"), "earlier");
-        let out = format_all(&[&b, &a2, &a1]);
-        assert_eq!(out, "a.rs:3\nz\nearlier\n\na.rs:20\ny\nlater\n\nb.rs:5\nx\ntwo");
+    fn the_export_file_is_overwritten_and_ignores_its_own_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = ReviewFile { repo: dir.path().to_path_buf() };
+        target.export("first").unwrap();
+        target.export("a.rs:1\nx\nsecond").unwrap();
+        let read = |p: &str| std::fs::read_to_string(dir.path().join(p)).unwrap();
+        assert_eq!(read(EXPORT_FILE), "a.rs:1\nx\nsecond\n");
+        assert_eq!(read(".diff-reckoner/.gitignore"), "*\n");
+        assert_eq!(target.success_message(2), "wrote 2 comments to .diff-reckoner/review.md");
     }
 }

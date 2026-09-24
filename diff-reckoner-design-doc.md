@@ -1,7 +1,7 @@
 # Diff Reckoner — design doc
 
 **Status:** design agreed 2026-09-22. Implemented: §1.1 (the strip), §3 (in-file comments),
-§5.3 (the Comments tab), §6 (outstanding-comment indicators).
+§5.3 (the Comments tab), §6 (outstanding-comment indicators), §8 (export).
 
 A standalone terminal diff reviewer. You read a change, drop review comments
 into the code, and hand the lot to an agent to address. Forked from
@@ -242,16 +242,28 @@ declined by Windows Terminal. Windows Terminal is **not handled** — leave a
 
 Two keys, two targets, both non-consuming:
 
-- **Clipboard** — `pbcopy` / `wl-copy` / `xclip` / `xsel`, first available.
-- **Write to file** — under the repo, then open it. Containers and remote
-  shells frequently have no clipboard tool, and a path inside the repo is
-  visible to both the TUI and the editor it launches.
+- **Clipboard** (`y`) — `pbcopy` / `wl-copy` / `xclip` / `xsel`, first available.
+- **Write to file** (`x`) — `.diff-reckoner/review.md`, overwritten whole, then
+  opened in the OS default app for `.md` (`open` / `xdg-open`). Containers and remote shells frequently have no
+  clipboard tool, and a long export cannot be selected out of a terminal either;
+  a path inside the repo is short enough to type into the agent's prompt and
+  readable by it. The directory holds a `.gitignore` of `*`, written once, so
+  neither file ever shows as a change.
 
-Format is reviewr's, unchanged: one block per comment as
-`path:start-end`, the verbatim snippet, then the comment text; blocks sorted by
-file then line and joined by a blank line. Comment text is normalised (CRs
-dropped, trailing space trimmed, blank lines removed) so it cannot forge the
-block separator.
+Both targets get the same Markdown text, written to an agent:
+
+- A preamble: address the comments, each comment line starts with the tag,
+  delete a comment's lines once it is addressed, and leave them with a reason
+  when it is not. A line explaining `[DELETED: (...)]` is added only when a
+  comment carries one.
+- A `## path` section per file, its comments in line order.
+- Per comment, `Line N:` / `Lines N-M:` (the tag lines), then the tag lines
+  verbatim with up to 5 lines of the file either side (§5.3's window), fenced
+  with the file's extension as the language. The fence is longer than any
+  backtick run in the block, so no file content can close it.
+
+No scope or branch line: the export holds every comment regardless of scope
+(§5.3), so naming the scope would misdescribe it.
 
 **What the export is for.** The agent does not need it — it can grep
 `[- REVIEW -]` and get every comment with perfect context. The export is a

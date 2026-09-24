@@ -2705,7 +2705,8 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
             ),
             "scope",
         ),
-        A::Copy => (hint(K::Copy), "copy"),
+        A::Copy => (hint(K::Copy), "copy to clipboard"),
+        A::Export => (hint(K::Export), "export to file"),
         A::Save | A::SaveTheme => ("enter".into(), "save"),
         A::Newline => ("shift+enter".into(), "newline"),
         A::Cancel | A::ClosePicker => ("esc".into(), "cancel"),
@@ -2792,6 +2793,20 @@ fn action_entry(app: &App, action: FooterAction, band: Band) -> Vec<Span<'static
     spans
 }
 
+/// A `send` entry on row 1 and its width with the leading ` · `: the full label, or where the row
+/// is tight the one word it sheds to (`y copy`, `x export`).
+fn send_entry(app: &App, action: FooterAction, compact: bool) -> (Vec<Span<'static>>, usize) {
+    let (key, label) = action_key_label(app, action);
+    let label = match action {
+        FooterAction::Copy if compact => "copy".to_string(),
+        FooterAction::Export if compact => "export".to_string(),
+        _ => label,
+    };
+    let (key_style, label_style) = band_styles(Band::Send, app.palette());
+    let width = SEP.chars().count() + key.chars().count() + 1 + label.chars().count();
+    (vec![Span::styled(key, key_style), Span::styled(format!(" {label}"), label_style)], width)
+}
+
 /// The rendered width of one action entry: its `key label` (a space joins them).
 fn entry_body_width(app: &App, action: FooterAction) -> usize {
     let (key, label) = action_key_label(app, action);
@@ -2870,13 +2885,20 @@ fn footer_row1(app: &App, w: usize) -> (Vec<Span<'static>>, Vec<FooterAction>) {
     let primary = bands.iter().find(|&&(_, b)| b == Band::Primary).map(|&(a, _)| a);
     let do_acts: Vec<FooterAction> =
         bands.iter().filter(|&&(_, b)| b == Band::Do).map(|&(a, _)| a).collect();
-    let send = bands.iter().find(|&&(_, b)| b == Band::Send).map(|&(a, _)| a);
+    let send: Vec<FooterAction> =
+        bands.iter().filter(|&&(_, b)| b == Band::Send).map(|&(a, _)| a).collect();
     let show_more = app.mode == Mode::Normal;
     let reserve = if show_more { 2 } else { 0 }; // a gap plus the `?`
 
     // `send` and the `?` share the right of the row and never drop, so the primary and the actions
     // both yield to keep them on the line — the primary reserves their width before anything else.
-    let send_w = send.map_or(0, |a| entry_width(app, a));
+    // Only the first `send` is held; the rest take what room is left (see below). The sends keep
+    // their full labels only while the whole primary, a legible status, and the `?` still fit.
+    let primary_w = primary.map_or(0, |a| entry_body_width(app, a));
+    let status_need = if app.status.is_empty() { 0 } else { STATUS_FRAME + STATUS_MIN };
+    let full_send_w = send.first().map_or(0, |&a| send_entry(app, a, false).1);
+    let compact = 1 + primary_w + full_send_w + status_need + reserve > w;
+    let send_w = send.first().map_or(0, |&a| send_entry(app, a, compact).1);
     let tail = send_w + reserve;
 
     // While the panel is open, row 1 joins the labeled grid: a dim `do` gutter, its content aligned
@@ -2955,12 +2977,26 @@ fn footer_row1(app: &App, w: usize) -> (Vec<Span<'static>>, Vec<FooterAction>) {
         spans.extend(action_entry(app, a, Band::Do));
     }
 
-    // `send` closes the actions and never drops.
-    if let Some(a) = send {
-        used += send_w;
-        spans.push(Span::styled(SEP, Style::default().fg(p.dim2)));
-        spans.extend(action_entry(app, a, Band::Send));
+    // Every `send` after the first yields to the cursor's actions and the status, since the `?`
+    // panel's `go` band repeats it.
+    let mut extra_sends = Vec::new();
+    if !trimming {
+        for &a in send.iter().skip(1) {
+            let ew = send_entry(app, a, compact).1;
+            if used + ew + send_w + status_w + reserve > w {
+                break;
+            }
+            used += ew;
+            extra_sends.push(a);
+        }
     }
+
+    // `send` closes the actions and never drops.
+    for a in send.first().copied().into_iter().chain(extra_sends) {
+        spans.push(Span::styled(SEP, Style::default().fg(p.dim2)));
+        spans.extend(send_entry(app, a, compact).0);
+    }
+    used += send_w;
 
     // The transient status rides after the actions, truncated into the room its reservation kept.
     // It drops only below `STATUS_MIN`, where no message would be legible anyway. A modal that

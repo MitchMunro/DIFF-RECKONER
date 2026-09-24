@@ -13,7 +13,7 @@ use anyhow::Result;
 
 use crate::comments_tab::{CommentsView, NavRow, Reveal};
 use crate::diff::{DiffCache, FileDiff, Row, View};
-use crate::export::{ExportTarget, format_all};
+use crate::export::{EXPORT_FILE, ExportTarget, ReviewFile, format_all};
 use crate::file_list::{self, Annotation, Entry, RowKind};
 use crate::git;
 use crate::highlight::Highlighter;
@@ -617,6 +617,7 @@ pub enum FooterAction {
     ThemeSide,
     Scope,
     Copy,
+    Export,
     Save,
     Newline,
     Cancel,
@@ -848,6 +849,9 @@ pub struct App {
     /// An `edit` press that named a file. The event loop runs the editor, suspending the pane
     /// first only for one that draws there. `None` when idle.
     pub editor_request: Option<EditTarget>,
+    /// A written export file awaiting the platform opener, as an absolute path. The event loop
+    /// opens it. `None` when idle.
+    pub open_request: Option<PathBuf>,
     /// The in-file find band's state while `mode == Mode::Find`, `None` otherwise
     pub find: Option<Find>,
     /// Whether the tab-strip glyph paints this frame — maintained by the event loop's
@@ -989,6 +993,7 @@ impl App {
             search_dirty: false,
             search_track: None,
             editor_request: None,
+            open_request: None,
             find: None,
             refresh_indicator: false,
             refresh_commanded: false,
@@ -4371,6 +4376,7 @@ impl App {
         // `?` (the renderer keeps it when a narrow row trims the actions before it).
         if !self.store.is_empty() {
             out.push((A::Copy, Send));
+            out.push((A::Export, Send));
         }
 
         // The `go` band: the keys that work anywhere. `scope` and `refresh` only when they are not
@@ -4396,6 +4402,7 @@ impl App {
         out.push((A::Theme, Go));
         if !self.store.is_empty() {
             out.push((A::Copy, Go));
+            out.push((A::Export, Go));
         }
         if !out.iter().any(|&(a, _)| a == A::Refresh) {
             out.push((A::Refresh, Go));
@@ -4443,6 +4450,7 @@ impl App {
                 (A::EditComment, Do),
                 (A::DeleteComment, Do),
                 (A::Copy, Send),
+                (A::Export, Send),
             ]
         } else {
             vec![(A::Refresh, Primary)]
@@ -4765,7 +4773,7 @@ impl App {
     /// delivered.
     pub fn export(&mut self, target: &dyn ExportTarget) -> bool {
         if self.store.is_empty() {
-            self.status = "no comments to copy".to_string();
+            self.status = "no comments to export".to_string();
             return false;
         }
         let refs: Vec<&Comment> = self.store.iter().collect();
@@ -4783,6 +4791,15 @@ impl App {
                 logln!("export ERR: {e:#}");
                 false
             }
+        }
+    }
+
+    /// Write every comment to the export file, then open it in the OS default app for its
+    /// type. Export never consumes (design doc §8).
+    pub fn export_to_file(&mut self) {
+        if self.export(&ReviewFile { repo: self.repo.clone() }) {
+            let path = self.repo.join(EXPORT_FILE);
+            self.open_request = Some(std::path::absolute(&path).unwrap_or(path));
         }
     }
 
@@ -4950,6 +4967,7 @@ mod tests {
             anchor: None,
             before: Vec::new(),
             after: Vec::new(),
+            lines: Vec::new(),
         }
     }
 

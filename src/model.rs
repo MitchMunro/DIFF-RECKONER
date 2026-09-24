@@ -122,6 +122,8 @@ pub struct Comment {
     /// comment. Not identity: an edit nearby changes it without making another comment.
     pub before: Vec<String>,
     pub after: Vec<String>,
+    /// The tag lines themselves, verbatim: what the export shows an agent to delete.
+    pub lines: Vec<String>,
 }
 
 impl Comment {
@@ -218,6 +220,7 @@ mod tests {
             anchor: Some("x".into()),
             before: Vec::new(),
             after: Vec::new(),
+            lines: Vec::new(),
         }
     }
 

@@ -1373,10 +1373,12 @@ fn an_export_never_consumes_comments() {
 
     // The sent text is the real export block format, end to end through App::export.
     let sent = target.last();
-    assert_eq!(
-        sent, "a.rs:2\nBETA\n[DELETED: (beta)] two\n\na.rs:6\nepsilon\none",
-        "location, the annotated line, then the text; blocks split by a blank line"
+    assert!(sent.starts_with("Address the 2 review comments below."), "{sent}");
+    assert!(
+        sent.contains("Line 2:\n```rs\nalpha\n// [- REVIEW -] [DELETED: (beta)] two\nBETA\n"),
+        "the tag lines in their context, fenced: {sent}"
     );
+    assert!(sent.contains("\n\nLine 6:\n```rs\n"), "one block per comment: {sent}");
 }
 
 #[test]
@@ -1452,7 +1454,10 @@ fn a_comment_can_be_written_across_multiple_lines() {
     let target = FakeTarget::ok();
     app.export(&target);
     let sent = target.last();
-    assert!(sent.contains("first line\nsecond line"), "export preserves the break: {sent:?}");
+    assert!(
+        sent.contains("// [- REVIEW -] first line\n// [- REVIEW -] second line"),
+        "export preserves the break: {sent:?}"
+    );
     assert!(!sent.contains("\n\n\n"), "no blank-line run that could split a block");
 }
 
@@ -2716,7 +2721,7 @@ fn the_tabs_keep_independent_selections() {
 }
 
 #[test]
-fn a_file_view_comment_exports_as_path_line_with_its_annotated_line() {
+fn a_file_view_comment_exports_its_tag_line_above_the_line_it_annotates() {
     use diff_reckoner::app::Tab;
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\ngamma\n");
@@ -2736,7 +2741,10 @@ fn a_file_view_comment_exports_as_path_line_with_its_annotated_line() {
     let target = FakeTarget::ok();
     app.export(&target);
     let out = target.last();
-    assert_eq!(out, "a.rs:2\nbeta\nwhy", "the comment sits above beta, line 2");
+    assert!(
+        out.ends_with("Line 2:\n```rs\nalpha\n// [- REVIEW -] why\nbeta\ngamma\n```"),
+        "the comment sits above beta, line 2: {out}"
+    );
 }
 
 #[test]
@@ -3039,8 +3047,8 @@ fn rebinding_down_frees_the_arrow_and_tab_stays_fixed() {
     let r = edited_repo();
     let mut app = app_on(&r);
     let keymap = Keymap::resolve(&[
-        (Action::Down, vec![Key::plain('x')]),
-        (Action::Up, vec![Key::plain('X')]),
+        (Action::Down, vec![Key::plain('s')]),
+        (Action::Up, vec![Key::plain('S')]),
     ])
     .unwrap();
     app.focus = Focus::Diff;
@@ -3050,7 +3058,7 @@ fn rebinding_down_frees_the_arrow_and_tab_stays_fixed() {
     press(&mut app, &keymap, KeyCode::Down);
     assert_eq!(app.diff_cursor, 0, "the freed down arrow answers nothing");
 
-    press(&mut app, &keymap, KeyCode::Char('x'));
+    press(&mut app, &keymap, KeyCode::Char('s'));
     assert!(app.diff_cursor > 0, "the bound key moves the cursor");
 
     press(&mut app, &keymap, KeyCode::Tab);
@@ -3423,7 +3431,7 @@ fn the_comments_tab_acts_through_the_rebindable_keys() {
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "note");
     let keymap = Keymap::resolve(&[
-        (Action::Delete, vec![Key::plain('x')]),
+        (Action::Delete, vec![Key::plain('a')]),
         (Action::OpenComment, vec![Key::plain('o')]),
     ])
     .unwrap();
@@ -3436,7 +3444,7 @@ fn the_comments_tab_acts_through_the_rebindable_keys() {
     press(&mut app, &keymap, KeyCode::Char('o'));
     assert_eq!(app.tab, Tab::AllFiles, "the rebound key opens the comment");
     press(&mut app, &keymap, KeyCode::Char('3'));
-    press(&mut app, &keymap, KeyCode::Char('x'));
+    press(&mut app, &keymap, KeyCode::Char('a'));
     press(&mut app, &keymap, KeyCode::Enter);
     assert!(app.store.is_empty(), "the rebound `delete` acts on the selected card");
 }
@@ -6127,4 +6135,26 @@ fn a_tag_counts_inside_a_comment_or_starting_a_line_of_a_file_without_comments()
     );
     app.delete_comment();
     assert_eq!(r.read("data.json"), "{\n  \"k\": 1\n}\n", "deleting restores the file");
+}
+
+#[test]
+fn export_writes_the_review_file_and_opens_it_without_touching_git() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.export_to_file();
+    assert_eq!(app.status, "no comments to export");
+    assert!(app.open_request.is_none());
+
+    comment_on(&mut app, '+', "note");
+    app.export_to_file();
+    assert_eq!(app.status, "wrote 1 comment to .diff-reckoner/review.md");
+    assert!(r.read(".diff-reckoner/review.md").contains("[- REVIEW -] note\n"));
+    let request = app.open_request.take().expect("the export opens");
+    assert!(request.is_absolute() && request.ends_with(".diff-reckoner/review.md"));
+    assert!(app.editor_request.is_none(), "the OS opener opens it, not the editor");
+    assert_eq!(app.store.len(), 1, "export never consumes");
+    assert!(
+        !r.git(&["status", "--porcelain", "--untracked-files=all"]).contains(".diff-reckoner"),
+        "the export directory ignores itself"
+    );
 }

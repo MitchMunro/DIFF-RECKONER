@@ -281,10 +281,10 @@ fn the_fold_hint_names_the_expand_binding() {
     // A rebound `expand` renames the fold row's inline label and the footer hint alike
     // (a hint shows the action's first bound key).
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("config.toml"), "[keybindings]\nexpand = [\"x\"]\n").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[keybindings]\nexpand = [\"o\"]\n").unwrap();
     app.set_plugin_config(diff_reckoner::config::plugin_config_in(dir.path()).unwrap());
     let out = render(&app);
-    assert!(out.contains("x expand"), "the rebound key names the hint:\n{out}");
+    assert!(out.contains("o expand"), "the rebound key names the hint:\n{out}");
     assert!(!out.contains("→ expand"), "the freed arrow leaves the hint");
 }
 
@@ -738,6 +738,32 @@ fn a_narrow_row_keeps_send_and_the_more_hint_by_shedding_the_primary_label() {
     assert!(narrow.contains("y copy"), "copy never drops:\n{narrow}");
     assert!(ends_with_hint(&narrow), "the `?` never drops:\n{narrow}");
     assert!(narrow.chars().count() <= 16, "the row never overflows its width:\n{narrow}");
+}
+
+#[test]
+fn export_follows_copy_on_row_one_and_yields_first_on_a_narrow_pane() {
+    let (_repo, mut app) = edited_app();
+    on_changed_line(&mut app);
+    app.start_comment();
+    app.input_push('n');
+    app.submit_comment();
+    let wide = footer_line(&render_at(&app, 120));
+    assert!(
+        wide.contains("y copy to clipboard · x export to file"),
+        "both targets sit together:\n{wide}"
+    );
+    let narrow = footer_line(&render_at(&app, 20));
+    assert!(narrow.contains("y copy"), "copy never drops:\n{narrow}");
+    assert!(!narrow.contains("export"), "export yields first:\n{narrow}");
+    assert!(!narrow.contains("clipboard"), "a tight row sheds to `y copy`:\n{narrow}");
+    assert!(ends_with_hint(&narrow), "the `?` never drops:\n{narrow}");
+
+    app.set_tab(Tab::Comments).unwrap();
+    let listed = footer_line(&render_at(&app, 120));
+    assert!(
+        listed.contains("y copy to clipboard · x export to file"),
+        "the Comments tab offers both:\n{listed}"
+    );
 }
 
 #[test]
@@ -1480,12 +1506,12 @@ fn rebound_app(keybindings: &str) -> App {
 
 #[test]
 fn hints_show_the_first_bound_key() {
-    let app = rebound_app("comment = [\"ㅊ\", \"c\"]\ntab-all-files = [\"x\"]\n");
+    let app = rebound_app("comment = [\"ㅊ\", \"c\"]\ntab-all-files = [\"o\"]\n");
     let out = render(&app);
     let footer = footer_line(&out);
     // A wide hint key spans two buffer cells, so the dump carries a placeholder space after it.
     assert!(footer.contains("ㅊ  comment"), "the hint is the first bound key:\n{footer}");
-    assert!(out.contains("x Files"), "the header tab hint follows its binding:\n{out}");
+    assert!(out.contains("o Files"), "the header tab hint follows its binding:\n{out}");
     assert!(!out.contains("2 Files"), "the replaced digit is gone:\n{out}");
 }
 

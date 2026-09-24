@@ -28,8 +28,10 @@ comment an agent deletes leaves the list on the next refresh. A comment on a rem
 above the nearest surviving line and starts with `[DELETED: (...)]`, quoting the removed
 line's first 16 characters. Markdown and plain text files take the tag on a bare line with no
 comment marker. Files with no line-comment syntax (JSON, CSV) refuse a comment, and a
-git-ignored file takes one only on a second `c`. `y` copies every comment to the clipboard
-and leaves them in place.
+git-ignored file takes one only on a second `c`. `y` copies every comment to the clipboard;
+`x` writes them to `.diff-reckoner/review.md` (a directory that git-ignores itself) and opens
+it in your default app for `.md` files, for a shell with no clipboard: point the agent at the path. Both leave the comments in
+place.
 
 `3` opens the Comments tab: every comment in the repo, whatever the scope, as a card with five
 lines of the file either side. In a file with no line-comment syntax (JSON, HTML, CSS, CSV), a

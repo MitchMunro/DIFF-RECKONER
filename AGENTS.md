@@ -23,10 +23,11 @@ behaviour.
 
 Inherited from reviewr and still load-bearing. Cite them by name:
 
-- **Tag lines only**: the reviewer's one worktree write is a comment's own tag lines, through
-  `src/review.rs` — inserted, rewritten, or removed, a delete restoring the file byte for byte.
-  It never touches the index or branches; its only git writes are private refs under
-  `refs/worktree/diff-reckoner/`.
+- **Tag lines only**: the reviewer's one write to a reviewed file is a comment's own tag lines,
+  through `src/review.rs` — inserted, rewritten, or removed, a delete restoring the file byte
+  for byte. Its only other worktree write is the export file under the self-ignoring
+  `.diff-reckoner/` (`src/export.rs`). It never touches the index or branches; its only git
+  writes are private refs under `refs/worktree/diff-reckoner/`.
 - **Comments survive**: the file is the only store, so a refresh re-scans rather than drops.
   Every write re-reads the file first and refuses when it no longer holds what the reviewer
   saw, so it never lands on lines an agent has moved.
@@ -65,7 +66,8 @@ matches.
   authoritative).
 - `src/editor.rs` — the editor command: a name-keyed dialect table and the `editor` key's
   `{file}`/`{line}` template. `run_editor` in `lib.rs` owns the spawn.
-- `src/export.rs` — comment export: format all, copy to the clipboard. Never consumes.
+- `src/export.rs` — comment export: format all, copy to the clipboard or write
+  `.diff-reckoner/review.md`. Never consumes.
 - `src/config.rs` — the config file boundary, inherited from reviewr's plugin config. The
   design doc puts a config file out of scope; this is leftover surface, not a commitment.
 

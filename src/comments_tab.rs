@@ -314,6 +314,7 @@ mod tests {
             anchor: Some("x".into()),
             before: Vec::new(),
             after: Vec::new(),
+            lines: Vec::new(),
         }
     }
 

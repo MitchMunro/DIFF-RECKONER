@@ -158,6 +158,7 @@ pub fn parse(path: &str, content: &str) -> Vec<Comment> {
             anchor: lines.get(i + 1).map(|l| strip_eol(l).to_string()),
             before: context_above(&lines, start),
             after: context_below(&lines, i),
+            lines: lines[start..=i].iter().map(|l| strip_eol(l).into()).collect(),
         });
         i += 1;
     }
