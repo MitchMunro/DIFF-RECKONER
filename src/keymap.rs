@@ -38,7 +38,8 @@ pub enum Action {
     Delete,
     NextComment,
     PrevComment,
-    Comments,
+    TabComments,
+    OpenComment,
     Search,
     Find,
     Keys,
@@ -58,13 +59,14 @@ pub enum KeyCode {
     Down,
     PageUp,
     PageDown,
+    Enter,
 }
 
 impl KeyCode {
     /// Every named key, the one list `by_name` and `names` derive from. The spellings live in
     /// the exhaustive `name`/`label` matches, so a new variant cannot compile unspelled.
-    const NAMED: [KeyCode; 6] =
-        [Self::Left, Self::Right, Self::Up, Self::Down, Self::PageUp, Self::PageDown];
+    const NAMED: [KeyCode; 7] =
+        [Self::Left, Self::Right, Self::Up, Self::Down, Self::PageUp, Self::PageDown, Self::Enter];
 
     /// The config spelling: the bare character, or the named key's lowercase name
     fn name(self) -> String {
@@ -76,6 +78,7 @@ impl KeyCode {
             Self::Down => "down".into(),
             Self::PageUp => "pageup".into(),
             Self::PageDown => "pagedown".into(),
+            Self::Enter => "enter".into(),
         }
     }
 
@@ -89,6 +92,7 @@ impl KeyCode {
             Self::Down => "↓".into(),
             Self::PageUp => "PageUp".into(),
             Self::PageDown => "PageDown".into(),
+            Self::Enter => "enter".into(),
         }
     }
 
@@ -153,7 +157,7 @@ impl Key {
 
 /// Every action with its config name and default keys — the single source the default keymap,
 /// the name lookup, and the config error message are built from.
-const ACTIONS: [(Action, &str, &[Key]); 39] = [
+const ACTIONS: [(Action, &str, &[Key]); 40] = [
     (Action::Down, "down", &[Key::plain('j'), Key::named(KeyCode::Down)]),
     (Action::Up, "up", &[Key::plain('k'), Key::named(KeyCode::Up)]),
     (Action::NextHunk, "next-hunk", &[Key::plain(']')]),
@@ -173,6 +177,7 @@ const ACTIONS: [(Action, &str, &[Key]); 39] = [
     (Action::CommitPick, "commit-pick", &[Key::plain('G')]),
     (Action::TabChanges, "tab-changes", &[Key::plain('1')]),
     (Action::TabAllFiles, "tab-all-files", &[Key::plain('2')]),
+    (Action::TabComments, "tab-comments", &[Key::plain('3')]),
     (Action::Wrap, "wrap", &[Key::plain('w')]),
     (Action::Theme, "theme", &[Key::plain('t')]),
     (Action::Preview, "preview", &[Key::plain('m')]),
@@ -186,7 +191,7 @@ const ACTIONS: [(Action, &str, &[Key]); 39] = [
     (Action::Delete, "delete", &[Key::plain('d')]),
     (Action::NextComment, "next-comment", &[Key::plain('n')]),
     (Action::PrevComment, "prev-comment", &[Key::plain('N')]),
-    (Action::Comments, "comments", &[Key::plain('3')]),
+    (Action::OpenComment, "open-comment", &[Key::named(KeyCode::Enter)]),
     (Action::Search, "search", &[Key::plain('/')]),
     (Action::Find, "find", &[Key::ctrl('f')]),
     (Action::Keys, "keys", &[Key::plain('?')]),
@@ -211,6 +216,7 @@ impl Action {
         match name {
             "list-wider" => Some(Self::NavigatorGrow),
             "list-narrower" => Some(Self::NavigatorShrink),
+            "comments" => Some(Self::TabComments),
             _ => Self::by_name(name),
         }
     }

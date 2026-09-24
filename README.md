@@ -11,7 +11,7 @@ mouse handling, syntax highlighting and diff engine are his work.
 
 Early. The fork has herdr, the PR tab, the `last turn` scope and the agent-send export
 removed, and comments are written into the files themselves. Still to come from the design
-doc: the whole-repo comment sweep, the Comments tab, and the terminal-palette colour model.
+doc: the whole-repo comment sweep, the whole-file view, and the terminal-palette colour model.
 See `diff-reckoner-design-doc.md`.
 
 ## Comments
@@ -30,6 +30,16 @@ line's first 16 characters. Markdown and plain text files take the tag on a bare
 comment marker. Files with no line-comment syntax (JSON, CSV) refuse a comment, and a
 git-ignored file takes one only on a second `c`. `y` copies every comment to the clipboard
 and leaves them in place.
+
+`3` opens the Comments tab: every comment in the repo, whatever the scope, as a card with five
+lines of the file either side. In a file with no line-comment syntax (JSON, HTML, CSS, CSV), a
+line that starts with the tag is a comment too, so it shows, edits, and deletes like the rest
+(`c` still refuses to write a new one there). The navigator lists each commented file with its comments under
+it. Selecting a comment opens it for editing in its card: click it (in the navigator or the
+stack), or step with `j`/`k` and `f`/`F`. While it is open, `↑`/`↓` run on past the box to the
+neighbouring card, and moving to another comment saves this one; `esc` reverts it and closes
+the box. With no box open, `d` deletes the selected card and `enter` (or a click on a card's
+`path:line`) opens it in the Files tab with the cursor on it.
 
 ## Build
 

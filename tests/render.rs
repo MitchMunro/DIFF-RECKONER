@@ -779,14 +779,15 @@ fn the_footer_shows_the_sends_outcome_at_a_pane_width_by_yielding_the_cursor_act
         assert!(ends_with_hint(&row), "the `?` left the row at width {w}:\n{row}");
     }
 
-    // `s` is also the comments list's primary, so a refusal has to reach the reviewer there too.
-    // The list has no `?`, so its trailing `…` is the only promise the trimmed actions exist, and
-    // the status leaves room for it.
-    app.open_list();
-    let listed = footer_line(&render_at(&app, 40));
-    assert!(listed.contains("no agent here"), "the refusal shows in the list at 40:\n{listed}");
-    assert!(listed.contains("y copy"), "copy never drops in the list either:\n{listed}");
-    assert!(listed.trim_end().ends_with('…'), "the trimmed actions keep their `…`:\n{listed}");
+    // The Comments tab's row 1 holds the same promises under the same status.
+    app.set_tab(Tab::Comments).unwrap();
+    let listed = footer_line(&render_at(&app, 120));
+    assert!(listed.contains("no agent here"), "the refusal shows on the tab:\n{listed}");
+    assert!(listed.contains("y copy"), "copy never drops there either:\n{listed}");
+    for w in 14..=140u16 {
+        let row = footer_line(&render_at(&app, w));
+        assert!(ends_with_hint(&row), "the `?` left the Comments row at width {w}:\n{row}");
+    }
 }
 
 #[test]
@@ -1155,7 +1156,7 @@ fn a_binary_file_shows_the_no_line_comments_message() {
 }
 
 #[test]
-fn the_comments_list_leads_a_deleted_line_comment_with_its_marker() {
+fn the_comments_tab_leads_a_deleted_line_comment_with_its_marker() {
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\n");
     r.commit_all("init");
@@ -1168,27 +1169,127 @@ fn the_comments_list_leads_a_deleted_line_comment_with_its_marker() {
         app.input_push(ch);
     }
     app.submit_comment();
-    app.open_list();
+    app.set_tab(Tab::Comments).unwrap();
 
     let out = render(&app);
-    assert!(out.contains("a.rs:2  [DELETED: (beta)] look here"), "the list row:\n{out}");
+    assert!(out.contains("2  [DELETED: (beta)] look here"), "the navigator row:\n{out}");
+    assert!(out.contains("REVIEW · on deleted: beta"), "the card's box title:\n{out}");
 }
 
 #[test]
-fn open_list_renders_the_comments_overlay() {
+fn the_comments_tab_shows_each_comment_as_a_card_with_its_context() {
+    let r = Repo::init();
+    let body = (1..=12).map(|n| format!("line {n}\n")).collect::<Vec<_>>().concat();
+    r.write("src/a.rs", &body);
+    r.commit_all("init");
+    r.write("src/a.rs", &body.replace("line 7\n", "LINE 7\n"));
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = app.visible.iter().position(|r| r.marker() == '+').unwrap();
+    app.start_comment();
+    for ch in "card note".chars() {
+        app.input_push(ch);
+    }
+    app.submit_comment();
+    app.set_tab(Tab::Comments).unwrap();
+
+    let out = render(&app);
+    assert!(out.contains("src/a.rs:7  enter open in files"), "the heading and its hint:\n{out}");
+    assert!(out.contains("card note"), "the comment's box:\n{out}");
+    // Five lines of the file either side of the tag line, numbered as the file numbers them.
+    for n in [2, 6] {
+        assert!(out.contains(&format!("{n} line {n}")), "line {n} above:\n{out}");
+    }
+    assert!(!out.contains(" 1 line 1"), "no more than five above:\n{out}");
+    assert!(out.contains("8 LINE 7") && out.contains("12 line 11"), "five below:\n{out}");
+    assert!(out.contains("src/a.rs"), "the navigator lists the file:\n{out}");
+    assert!(out.contains("3 Comments (1)"), "the tab carries the count:\n{out}");
+}
+
+#[test]
+fn the_selected_card_wears_the_cursor_on_its_comment_box() {
     let (_repo, mut app) = edited_app();
     app.focus = Focus::Diff;
     app.diff_cursor = app.diff.rows.iter().position(|r| r.marker() == '+').unwrap();
     app.start_comment();
-    for ch in "overlay note".chars() {
+    for ch in "boxed note".chars() {
         app.input_push(ch);
     }
     app.submit_comment();
-    app.open_list();
+    app.set_tab(Tab::Comments).unwrap();
 
     let out = render(&app);
-    assert!(out.contains("Comments ("), "overlay titled with a count");
-    assert!(out.contains("overlay note"), "comment text listed");
+    let buf = render_buffer(&app);
+    let bg_at = |needle: &str| {
+        let (y, line) = out.lines().enumerate().find(|(_, l)| l.contains(needle)).unwrap();
+        let x = line[..line.find(needle).unwrap()].chars().count() as u16;
+        buf.cell((x, y as u16)).unwrap().bg
+    };
+    assert_eq!(bg_at("boxed note"), SELECTION_BG, "the box text takes the cursor fill");
+    assert_ne!(bg_at("hello.rs:"), SELECTION_BG, "the heading stays plain");
+}
+
+#[test]
+fn a_click_on_the_comments_tab_selects_opens_and_edits_by_where_it_lands() {
+    use diff_reckoner::comments_tab::Reveal;
+    let r = Repo::init();
+    r.write("a.rs", "one\ntwo\n");
+    r.write("b.rs", "three\nfour\n");
+    r.commit_all("init");
+    r.write("a.rs", "ONE\ntwo\n");
+    r.write("b.rs", "THREE\nfour\n");
+    let mut app = app_on(&r);
+    for path in ["a.rs", "b.rs"] {
+        let i = app.entries.iter().position(|e| e.path == path).unwrap();
+        app.select_file(i).unwrap();
+        app.focus = Focus::Diff;
+        app.diff_cursor = app.visible.iter().position(|r| r.marker() == '+').unwrap();
+        app.start_comment();
+        app.input_push('x');
+        app.submit_comment();
+    }
+    app.set_tab(Tab::Comments).unwrap();
+    let keymap = app.keymap().clone();
+    let click = |app: &mut App, column: u16, row: u16| {
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(app, down, AREA, &[], &keymap, &diff_reckoner::export::Clipboard).unwrap();
+    };
+    // The test backend dumps one char per cell, so a char index is a column.
+    let find = |out: &str, needle: &str| -> (u16, u16) {
+        let (y, line) = out.lines().enumerate().find(|(_, l)| l.contains(needle)).unwrap();
+        let x = line.find(needle).unwrap();
+        (line[..x].chars().count() as u16, y as u16)
+    };
+
+    // The navigator's second comment row selects that card.
+    let out = render(&app);
+    let nav_x = ui::files_inner_rect(AREA, &app).x;
+    let (_, b_row) = find(&out, "b.rs");
+    click(&mut app, nav_x + 4, b_row + 1);
+    assert_eq!(app.comments.cursor, 1);
+    assert_eq!(app.comments.reveal, Some(Reveal::Top), "a navigator pick scrolls to the card");
+    assert_eq!(app.edited_card(), Some(1), "and opens its box for editing, as in the diff");
+    // The open box frees the mouse: a file row opens that file's first comment.
+    let (_, a_row) = find(&out, "a.rs");
+    click(&mut app, nav_x + 2, a_row);
+    assert_eq!(app.edited_card(), Some(0));
+
+    // A click on a card's code opens it; its `path:line` opens it in Files.
+    let out = render(&app);
+    let (code_x, code_y) = find(&out, "THREE");
+    click(&mut app, code_x, code_y);
+    assert_eq!(app.edited_card(), Some(1), "a click on the card's code opens it");
+    assert_eq!(app.tab, Tab::Comments);
+    let out = render(&app);
+    let (x, y) = find(&out, "b.rs:1");
+    click(&mut app, x + 1, y);
+    assert_eq!(app.tab, Tab::AllFiles, "the heading opens the comment in Files");
+    assert_eq!(app.diff_path.as_deref(), Some("b.rs"));
 }
 
 #[test]
@@ -2956,7 +3057,7 @@ fn the_active_tab_is_a_pill_and_the_hovered_ghost_underlines() {
 }
 
 #[test]
-fn the_tab_bar_counts_outstanding_comments_and_the_count_opens_the_list() {
+fn the_tab_bar_counts_outstanding_comments_and_the_count_opens_the_tab() {
     let r = dotted_repo();
     let mut app = app_on(&r);
     let header = render(&app).lines().nth(1).unwrap().to_string();
@@ -2974,8 +3075,8 @@ fn the_tab_bar_counts_outstanding_comments_and_the_count_opens_the_list() {
     let at = (0..cells.len()).find(|&i| cells[i..].starts_with(&['(', '2', ')'])).unwrap();
     assert_eq!(
         ui::hit_header(AREA, &app, app.keymap(), at as u16, 1),
-        Some(HeaderHit::Comments),
-        "the count is the click target"
+        Some(HeaderHit::Tab(Tab::Comments)),
+        "the count is part of the tab's click target"
     );
     let click = MouseEvent {
         kind: MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
@@ -2985,7 +3086,7 @@ fn the_tab_bar_counts_outstanding_comments_and_the_count_opens_the_list() {
     };
     let keymap = app.keymap().clone();
     handle_mouse(&mut app, click, AREA, &[], &keymap, &diff_reckoner::export::Clipboard).unwrap();
-    assert_eq!(app.mode, diff_reckoner::app::Mode::List, "the click opens the list");
+    assert_eq!(app.tab, Tab::Comments, "the click opens the Comments tab");
 }
 
 #[test]

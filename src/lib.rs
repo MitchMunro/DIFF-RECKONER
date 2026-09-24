@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod browser;
+pub mod comments_tab;
 pub mod config;
 pub mod diff;
 pub mod editor;
@@ -600,11 +601,18 @@ fn event_loop(
                 viewport
             };
             let heights = ui::diff_row_heights(app, area);
-            if std::mem::take(&mut app.reveal_diff) || app.composing() {
+            // A comment box open on the Comments tab keeps its card revealed instead
+            // (`settle_comments`), leaving the file tab's diff where it was.
+            let composing_here = app.composing() && app.tab != crate::app::Tab::Comments;
+            if std::mem::take(&mut app.reveal_diff) || composing_here {
                 app.reveal_diff_cursor(&heights, effective);
             }
             app.bound_diff_scroll(&heights, effective);
             let file_vp = ui::file_viewport_height(area, app);
+            if app.tab == crate::app::Tab::Comments {
+                let cards = ui::card_heights(app, area);
+                app.settle_comments(&cards, viewport, file_vp);
+            }
             // While the navigator is hidden its viewport is zero, and a reveal computed
             // there would zero the kept scroll — it stays pending for the show frame.
             if !app.navigator_hidden_here() && std::mem::take(&mut app.reveal_files) {
@@ -1046,9 +1054,18 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             Enter if alt_or_shift => app.input_push('\n'),
             Enter => app.submit_comment(),
             Char('j') if ctrl => app.input_push('\n'),
-            // The box wraps, so `↑`/`↓` walk display rows here rather than editing text.
-            Up => app.caret = ui::caret_vertical(&app.input, app.caret, cw, false),
-            Down => app.caret = ui::caret_vertical(&app.input, app.caret, cw, true),
+            // The box wraps, so `↑`/`↓` walk display rows here rather than editing text. On the
+            // Comments tab the stack reads as one document: past the box's first or last row
+            // they save it and open the card above or below.
+            Up | Down => {
+                let down = key.code == Down;
+                let to = ui::caret_vertical(&app.input, app.caret, cw, down);
+                if to == app.caret && app.edited_card().is_some() {
+                    app.step_comment(if down { 1 } else { -1 });
+                } else {
+                    app.caret = to;
+                }
+            }
             code => apply_text_edit(app, code, ctrl, alt, word),
         }
         return Ok(());
@@ -1104,6 +1121,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
         Down => Some(keymap::KeyCode::Down),
         PageUp => Some(keymap::KeyCode::PageUp),
         PageDown => Some(keymap::KeyCode::PageDown),
+        Enter => Some(keymap::KeyCode::Enter),
         _ => None,
     };
     let action = code.and_then(|code| keymap.action_for(crate::keymap::Key { ctrl, alt, code }));
@@ -1184,20 +1202,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
         return Ok(());
     }
 
-    // The comments-list overlay acts through the same bindings and closes on `esc` and the
-    // `comments` binding.
-    if app.mode == Mode::List {
-        match (action, key.code) {
-            (Some(K::Comments), _) | (_, Esc) => app.close_list(),
-            (Some(K::Down), _) => app.list_move(1),
-            (Some(K::Up), _) => app.list_move(-1),
-            (Some(K::Copy), _) => {
-                app.export(&Clipboard);
-            }
-            (Some(K::Edit), _) => app.start_edit(),
-            (Some(K::Delete), _) => app.delete_comment(),
-            _ => {}
-        }
+    if app.tab == crate::app::Tab::Comments
+        && app.mode == Mode::Normal
+        && handle_comments_key(app, action, key.code, area)?
+    {
         return Ok(());
     }
 
@@ -1210,6 +1218,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             }
             K::TabChanges => app.set_tab(crate::app::Tab::Changes)?,
             K::TabAllFiles => app.set_tab(crate::app::Tab::AllFiles)?,
+            K::TabComments => app.set_tab(crate::app::Tab::Comments)?,
             K::Down => app.move_cursor(1)?,
             K::Up => app.move_cursor(-1)?,
             // `expand`/`collapse` act on the collapsible under the cursor — a directory in the
@@ -1258,13 +1267,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             }
             K::NextComment => app.jump_comment(1),
             K::PrevComment => app.jump_comment(-1),
-            K::Comments => app.open_list(),
             K::Search => app.open_search(),
             K::Find => app.open_find(),
             K::Keys => app.toggle_keys(),
             // `delete` off the diff is inert. `edit` is not: it reaches the navigator's file
-            // rows too.
-            K::Delete => {}
+            // rows too. `open-comment` has a target on the Comments tab alone.
+            K::Delete | K::OpenComment => {}
         }
         return Ok(());
     }
@@ -1274,6 +1282,82 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
         // `esc` peels one layer: a live selection, then an armed crossing, then the footer
         // expansion (the `esc` ladder).
         Esc => app.escape(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// A key on the Comments tab. The movement bindings step and page through the cards, the
+/// file steps cross files, `open-comment` opens the selected comment in `All files`, and
+/// `edit`/`delete` act on it. The file tabs' cursor, fold, selection, and pane keys have no
+/// target here, so they are inert; every other key falls through to its usual action.
+/// Returns whether the key was taken.
+fn handle_comments_key(
+    app: &mut App,
+    action: Option<crate::keymap::Action>,
+    code: KeyCode,
+    area: Rect,
+) -> Result<bool> {
+    use crate::keymap::Action as K;
+    let page = |app: &mut App, pages: isize, halves: bool| {
+        let heights = ui::card_heights(app, area);
+        let viewport = ui::diff_viewport_height(area, app);
+        let step = if halves { viewport / 2 } else { viewport.saturating_sub(2) };
+        let lines = isize::try_from(step.max(1)).unwrap_or(isize::MAX);
+        app.comments.page(pages * lines, &heights, viewport);
+        app.open_card(app.comments.cursor, crate::comments_tab::Reveal::Visible);
+    };
+    match action {
+        Some(K::Down | K::NextComment) => app.step_comment(1),
+        Some(K::Up | K::PrevComment) => app.step_comment(-1),
+        Some(K::NextFile) => app.step_comment_file(true),
+        Some(K::PrevFile) => app.step_comment_file(false),
+        Some(K::PageDown) => page(app, 1, false),
+        Some(K::PageUp) => page(app, -1, false),
+        Some(K::HalfDown) => page(app, 1, true),
+        Some(K::HalfUp) => page(app, -1, true),
+        Some(K::OpenComment) => app.open_comment_in_files()?,
+        Some(K::Edit) => app.start_edit(),
+        Some(K::Delete) => app.delete_comment(),
+        Some(
+            K::Expand
+            | K::Collapse
+            | K::NextHunk
+            | K::PrevHunk
+            | K::Select
+            | K::Comment
+            | K::Preview
+            | K::Find
+            | K::BasePick
+            | K::CommitPick,
+        ) => {}
+        // `tab` and the `esc` ladder act on the file tab's panes and selection, which this
+        // tab does not show; `esc` still folds the footer expansion.
+        None if code == KeyCode::Tab => {}
+        None if code == KeyCode::Esc => app.keys_expanded = false,
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// A left click on the Comments tab's body. Selecting a comment opens it for editing — a
+/// navigator row (a file's row opens its first comment), or anywhere on a card — and the box
+/// being left saves first. A card's heading opens the comment in `All files` instead. A click
+/// on the card already open leaves its box, caret and all, as it is.
+fn comments_click(app: &mut App, m: MouseEvent, area: Rect) -> Result<()> {
+    use crate::comments_tab::Reveal;
+    use ui::CommentsHit as H;
+    match ui::comments_hit(area, app, m.column, m.row) {
+        Some(H::NavComment(i) | H::NavFile(i)) => app.open_card(i, Reveal::Top),
+        Some(H::Heading(i)) => {
+            if app.close_card_box() {
+                app.select_comment(i, Reveal::Visible);
+                app.open_comment_in_files()?;
+            }
+        }
+        Some(H::Box(i) | H::Card(i)) if app.edited_card() != Some(i) => {
+            app.open_card(i, Reveal::Visible);
+        }
         _ => {}
     }
     Ok(())
@@ -1717,6 +1801,32 @@ pub fn handle_mouse(
     // A modal captures new mouse gestures, but a divider gesture cancelled by the key that
     // opened it still owns its remaining drag and mouse-up events. The theme picker is not
     // modal, but its popup captures the mouse the same way.
+    // A card's open box on the Comments tab holds no place in a view the world can move, so
+    // it frees the mouse: a click elsewhere saves it and selects there, and a tab saves it
+    // and switches.
+    if app.edited_card().is_some() {
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                match ui::hit_header(area, app, keymap, m.column, m.row) {
+                    Some(ui::HeaderHit::Tab(tab)) => {
+                        if app.close_card_box() {
+                            app.set_tab(tab)?;
+                        }
+                    }
+                    Some(_) => {}
+                    None => comments_click(app, m, area)?,
+                }
+            }
+            MouseEventKind::ScrollDown if ui::in_files_pane(area, app, m.column, m.row) => {
+                app.wheel_comment_nav(3);
+            }
+            MouseEventKind::ScrollUp if ui::in_files_pane(area, app, m.column, m.row) => {
+                app.wheel_comment_nav(-3);
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
     if app.mode.is_modal() || app.mode == Mode::ThemePick {
         // Text selection stays available while the comment editor is open, selecting from the
         // frozen view under it; its clicks stay inert like the rest of the modal's pane
@@ -1807,13 +1917,14 @@ pub fn handle_mouse(
             if let Some(hit) = ui::hit_header(area, app, keymap, m.column, m.row) {
                 match hit {
                     ui::HeaderHit::Tab(tab) => app.set_tab(tab)?,
-                    ui::HeaderHit::Comments => app.open_list(),
                     ui::HeaderHit::Scope => app.set_scope(app.next_chip_scope())?,
                     // Inert when the picker cannot open here — with a `--base` flag the
                     // label names the base without offering a choice.
                     ui::HeaderHit::Base => app.open_base_picker(),
                     ui::HeaderHit::Pick => app.open_commit_picker(),
                 }
+            } else if app.tab == crate::app::Tab::Comments {
+                comments_click(app, m, area)?;
             } else if let Some(row) = ui::note_row_at(area, app, m.column, m.row) {
                 // A comment box opens for editing where it sits.
                 app.click_comment(row);
@@ -1883,6 +1994,18 @@ pub fn handle_mouse(
         // The wheel scrolls the viewport of whichever pane it is over — never the cursor, so
         // a comment is never anchored to a wheeled-past line. Horizontal scroll is
         // keyboard-only (`←`/`→`), since multiplexers don't reliably deliver h-wheel events.
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+            if app.tab == crate::app::Tab::Comments =>
+        {
+            let delta: isize = if m.kind == MouseEventKind::ScrollDown { 3 } else { -3 };
+            if ui::in_files_pane(area, app, m.column, m.row) {
+                app.wheel_comment_nav(delta);
+            } else {
+                let heights = ui::card_heights(app, area);
+                let viewport = ui::diff_viewport_height(area, app);
+                app.comments.scroll_by(delta, &heights, viewport);
+            }
+        }
         MouseEventKind::ScrollDown if ui::in_files_pane(area, app, m.column, m.row) => {
             app.wheel_files(3);
         }

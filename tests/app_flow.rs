@@ -620,7 +620,8 @@ fn file_row(app: &App, path: &str) -> usize {
 }
 
 #[test]
-fn editing_a_comment_surfaces_its_file_from_a_collapsed_directory() {
+fn opening_a_comment_in_files_surfaces_it_under_collapsed_directories() {
+    use diff_reckoner::app::Tab;
     let r = Repo::init();
     r.write("src/foo.rs", "a\nb\nc\n");
     r.write("src/bar.rs", "x\n");
@@ -631,31 +632,22 @@ fn editing_a_comment_surfaces_its_file_from_a_collapsed_directory() {
     r.write("root.rs", "2\n");
     let mut app = app_on(&r);
 
-    // Open src/foo.rs and comment on its changed line.
+    // Open src/foo.rs and comment on its changed line, then leave the diff on root.rs.
     app.select_file(file_row(&app, "src/foo.rs")).unwrap();
     comment_on(&mut app, '+', "note on foo");
     let commented_line = app.store.get(0).unwrap().start;
-
-    // Switch the open diff to root.rs, then collapse `src` so foo's row is hidden.
     app.select_file(file_row(&app, "root.rs")).unwrap();
-    assert_eq!(app.diff_path.as_deref(), Some("root.rs"));
-    app.file_cursor = app.file_rows.iter().position(|r| r.dir_path() == Some("src")).unwrap();
-    app.collapse_dir();
-    assert!(
-        !app.file_rows
-            .iter()
-            .any(|r| r.file_index().is_some_and(|i| app.entries[i].path == "src/foo.rs")),
-        "foo's row is hidden under the collapsed src/"
-    );
 
-    // Edit the comment from the list: the diff must switch to foo and land on its line,
-    // even though foo has no visible row (the A2 bug opened the box over root.rs).
-    app.open_list();
-    app.start_edit();
-    assert_eq!(app.diff_path.as_deref(), Some("src/foo.rs"), "edit surfaced the comment's file");
+    // `All files` opens with `src/` collapsed; `enter` on the card must still reach foo's
+    // row and land the cursor on the comment.
+    enter_tab(&mut app, Tab::Comments);
+    press(&mut app, &Keymap::default(), KeyCode::Enter);
+    assert_eq!(app.tab, Tab::AllFiles);
+    assert_eq!(app.diff_path.as_deref(), Some("src/foo.rs"), "the comment's file opened");
+    assert_eq!(app.file_cursor, file_row(&app, "src/foo.rs"), "its row is revealed and selected");
     let row = app.visible.get(app.diff_cursor).expect("cursor on a row");
-    assert_eq!(row.new_no(), Some(commented_line), "cursor landed on the commented line");
-    assert!(matches!(app.mode, Mode::Composing { editing: Some(_) }));
+    assert_eq!(row.new_no(), Some(commented_line), "cursor landed on the comment");
+    assert_eq!(app.focus, Focus::Diff);
 }
 
 /// Expand the fold under the cursor with synthetic geometry (these tests don't render).
@@ -998,15 +990,24 @@ fn the_expansion_toggles_from_normal_and_survives_a_poll() {
 }
 
 #[test]
-fn the_expansion_is_inert_in_the_comments_list() {
+fn the_comments_tab_bar_leads_with_opening_the_selected_comment() {
+    use diff_reckoner::app::Tab;
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "note");
     let keymap = Keymap::default();
-    app.open_list();
-    assert_eq!(app.mode, Mode::List);
+    press(&mut app, &keymap, KeyCode::Char('3'));
+    assert_eq!(app.tab, Tab::Comments);
+    let bands = app.footer_bands();
+    assert_eq!(bands[0], (FooterAction::OpenInFiles, Band::Primary));
+    assert!(bands.contains(&(FooterAction::EditComment, Band::Do)));
+    assert!(bands.contains(&(FooterAction::DeleteComment, Band::Do)));
+    // The file tabs' own actions have no target here.
+    for absent in [FooterAction::Comment, FooterAction::Select, FooterAction::TogglePane] {
+        assert!(!bands.iter().any(|&(a, _)| a == absent), "{absent:?} is not offered");
+    }
     press(&mut app, &keymap, KeyCode::Char('?'));
-    assert!(!app.keys_expanded, "`?` is inert while the comments list owns the bar");
+    assert!(app.keys_expanded, "`?` expands the bar here like anywhere");
 }
 
 #[test]
@@ -1847,7 +1848,7 @@ fn a_comment_can_be_edited_then_deleted() {
     comment_on(&mut app, '+', "original");
     let anchor_before = app.store.get(0).unwrap().anchor.clone();
 
-    app.open_list();
+    app.set_tab(diff_reckoner::app::Tab::Comments).unwrap();
     app.start_edit();
     app.input.clear();
     for ch in "rewritten\nover two lines".chars() {
@@ -1863,7 +1864,6 @@ fn a_comment_can_be_edited_then_deleted() {
         "the edit rewrites the tag lines in place"
     );
 
-    app.open_list();
     app.delete_comment();
     assert!(app.store.is_empty());
     assert_eq!(r.read("a.rs"), before, "deleting restores the file exactly");
@@ -1887,7 +1887,7 @@ fn an_edit_saves_even_after_an_agent_moved_the_comment() {
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "original");
-    app.open_list();
+    app.set_tab(diff_reckoner::app::Tab::Comments).unwrap();
     app.start_edit();
 
     // While the box is open, an agent adds a line above the comment.
@@ -1918,33 +1918,38 @@ fn a_new_comment_on_a_line_that_changed_on_disk_is_refused_with_the_draft_kept()
 }
 
 #[test]
-fn deleting_the_last_comment_closes_the_list_overlay() {
+fn deleting_the_last_comment_leaves_an_empty_comments_tab() {
+    use diff_reckoner::app::Tab;
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "only one");
-    app.open_list();
-    assert_eq!(app.mode, Mode::List);
+    app.set_tab(Tab::Comments).unwrap();
     app.delete_comment();
     assert!(app.store.is_empty());
-    assert_eq!(app.mode, Mode::Normal, "an emptied overlay closes instead of stranding the user");
+    assert_eq!(app.tab, Tab::Comments, "the tab stays where the reviewer put it");
+    assert_eq!(app.footer_bands()[0], (FooterAction::Refresh, Band::Primary));
 }
 
 #[test]
 fn finishing_an_edit_returns_to_its_origin() {
+    use diff_reckoner::app::Tab;
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "first");
     comment_on(&mut app, ' ', "second");
 
-    // Edit from the comments-list overlay → returns to the list.
-    app.open_list();
+    // Edit in a card → stays on the Comments tab, on the same card.
+    app.set_tab(Tab::Comments).unwrap();
+    app.step_comment(1);
     app.start_edit();
+    assert_eq!(app.edited_card(), Some(1), "the box opens in the selected card");
     app.input_push('!');
     app.submit_comment();
-    assert_eq!(app.mode, Mode::List, "a list-initiated edit returns to the list");
+    assert_eq!((app.tab, app.mode.clone()), (Tab::Comments, Mode::Normal));
+    assert_eq!(app.comments.cursor, 1, "the edited card stays selected");
 
     // Edit from the diff → returns to Normal.
-    app.close_list();
+    app.set_tab(Tab::Changes).unwrap();
     app.focus = Focus::Diff;
     app.diff_cursor = row_with(&app, '+');
     app.start_edit();
@@ -1953,7 +1958,8 @@ fn finishing_an_edit_returns_to_its_origin() {
 }
 
 #[test]
-fn editing_from_the_list_navigates_to_the_comments_file() {
+fn editing_on_the_comments_tab_leaves_the_file_tab_where_it_was() {
+    use diff_reckoner::app::Tab;
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\n");
     r.write("b.rs", "one\ntwo\n");
@@ -1976,14 +1982,19 @@ fn editing_from_the_list_navigates_to_the_comments_file() {
     app.select_file(ai).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
 
-    // Editing the comment from the list pulls the view back to its file and lands the
-    // cursor on a real diff line there (so the inline box opens over the comment).
-    app.open_list();
+    // The card opens its own box: the Changes tab's open file and cursor are not touched.
+    let cursor = app.diff_cursor;
+    app.set_tab(Tab::Comments).unwrap();
     app.start_edit();
     assert!(app.composing());
-    assert_eq!(app.diff_path.as_deref(), Some("b.rs"), "edit switched to the comment's file");
-    let dl = &app.diff.rows[app.diff_cursor];
-    assert!(dl.new_no().is_some() || dl.old_no().is_some(), "cursor sits on a real diff line");
+    assert_eq!(app.edited_card(), Some(0));
+    assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "the file tab keeps its open file");
+    assert_eq!(app.diff_cursor, cursor);
+    app.set_tab(Tab::Changes).unwrap();
+    assert_eq!(app.tab, Tab::Comments, "no tab switch while the box is open");
+    app.cancel_comment();
+    app.set_tab(Tab::Changes).unwrap();
+    assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
 }
 
 #[test]
@@ -2339,19 +2350,64 @@ fn a_comment_submitted_after_its_file_left_the_changeset_writes_nowhere() {
 }
 
 #[test]
-fn deleting_the_last_listed_comment_clamps_the_list_cursor() {
+fn deleting_the_last_card_selects_the_one_before_it() {
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on_line(&mut app, '+', "epsilon", "one");
     comment_on_line(&mut app, '-', "beta", "two");
 
-    app.open_list();
-    app.list_move(1); // cursor on the last comment (index 1)
-    assert_eq!(app.list_cursor, 1);
+    app.set_tab(diff_reckoner::app::Tab::Comments).unwrap();
+    app.step_comment(1); // the last card (index 1)
+    assert_eq!(app.comments.cursor, 1);
 
     app.delete_comment(); // removes index 1
     assert_eq!(app.store.len(), 1);
-    assert_eq!(app.list_cursor, 0, "list cursor clamps back into range");
+    assert_eq!(app.comments.cursor, 0, "the selection clamps back into range");
+}
+
+#[test]
+fn deleting_a_card_selects_the_one_that_took_its_place() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    comment_on_line(&mut app, '+', "epsilon", "one");
+    comment_on_line(&mut app, '-', "beta", "two");
+    let second = app.store.get(1).unwrap().text.clone();
+
+    app.set_tab(diff_reckoner::app::Tab::Comments).unwrap();
+    // The selection followed the first comment written; take the top card.
+    app.select_comment(0, diff_reckoner::comments_tab::Reveal::Visible);
+    app.delete_comment(); // removes index 0
+    assert_eq!(app.comments.cursor, 0);
+    assert_eq!(app.store.get(0).unwrap().text, second, "the cards closed up under it");
+}
+
+#[test]
+fn a_rescan_keeps_the_selected_card_by_identity() {
+    use diff_reckoner::app::Tab;
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    comment_on_line(&mut app, '+', "epsilon", "one");
+    comment_on_line(&mut app, '-', "beta", "two");
+    enter_tab(&mut app, Tab::Comments);
+    app.step_comment(1);
+    let selected = app.store.get(1).unwrap().text.clone();
+
+    // An agent strips the first comment: the selected one moves up an index, and the
+    // selection follows it rather than its old position.
+    let first = app.store.get(0).unwrap().clone();
+    let kept: Vec<String> = r
+        .read(&first.file)
+        .lines()
+        .filter(|l| !l.contains(&first.text))
+        .map(String::from)
+        .collect();
+    let stripped = kept.join("\n") + "\n";
+    r.write(&first.file, &stripped);
+    common::land_world(&mut app);
+    assert_eq!(app.store.len(), 1);
+    assert_eq!(app.comments.cursor, 0);
+    assert_eq!(app.store.get(0).unwrap().text, selected);
+    assert_eq!(app.tab, Tab::Comments, "a poll never moves the tab");
 }
 
 #[test]
@@ -2762,12 +2818,37 @@ fn editing_a_comment_on_all_files_opens_the_file_view() {
     app.select_file(brow).unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("b.rs"));
 
-    // Edit the comment from the list: it must bring a.rs back as a File view, not a diff.
-    app.open_list();
-    app.start_edit();
+    // Opening the comment from its card brings a.rs back as a File view, not a diff, and
+    // `e` there edits it in place.
+    enter_tab(&mut app, Tab::Comments);
+    app.open_comment_in_files().unwrap();
+    assert_eq!(app.tab, Tab::AllFiles);
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
-    assert_eq!(app.diff.view, View::File, "editing on All files opens the File view, not a diff");
-    assert!(app.composing());
+    assert_eq!(app.diff.view, View::File, "the comment opens in the File view, not a diff");
+    app.start_edit();
+    assert!(app.composing(), "the cursor landed on the comment");
+}
+
+#[test]
+fn a_comment_opens_in_files_from_any_scope() {
+    use diff_reckoner::app::Tab;
+    let (r, _) = commits_repo();
+    let mut app = app_on(&r);
+    app.select_file(0).unwrap();
+    comment_on(&mut app, '+', "root note");
+    // Under `commits` the Changes tab never lists the uncommitted comment's file; the Files
+    // tab reads the worktree, so the comment still has a place to open.
+    let keymap = Keymap::default();
+    press(&mut app, &keymap, KeyCode::Char('G'));
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(app.scope, Scope::Commits);
+    enter_tab(&mut app, Tab::Comments);
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(app.tab, Tab::AllFiles);
+    assert_eq!(app.diff_path.as_deref(), Some("root.rs"));
+    assert_eq!(app.scope, Scope::Commits, "opening never changes the scope");
+    let c = app.store.get(0).unwrap();
+    assert_eq!(app.visible[app.diff_cursor].new_no(), Some(c.start));
 }
 
 #[test]
@@ -3218,39 +3299,110 @@ fn find_opens_on_a_rebound_alt_chord_through_the_dispatcher() {
     assert_eq!(app.mode, Mode::Find, "the rebound alt chord opens find through the dispatcher");
 }
 
-#[test]
-fn the_comments_list_ignores_quit_and_closes_on_the_comments_binding() {
-    let r = edited_repo();
+/// A repo with two comments in `a.rs` and one in `b.rs`, open on the Changes tab.
+fn three_card_app() -> (Repo, App) {
+    let r = Repo::init();
+    r.write("a.rs", "a1\na2\na3\n");
+    r.write("b.rs", "b1\nb2\n");
+    r.commit_all("init");
+    r.write("a.rs", "A1\na2\nA3\n");
+    r.write("b.rs", "B1\nb2\n");
     let mut app = app_on(&r);
-    comment_on(&mut app, '+', "note");
-    let keymap = Keymap::default();
-
-    app.open_list();
-    assert_eq!(app.mode, Mode::List);
-    press(&mut app, &keymap, KeyCode::Char('q'));
-    assert_eq!(app.mode, Mode::List, "`q` does not close the list");
-    assert!(!app.should_quit, "and does not quit");
-
-    press(&mut app, &keymap, KeyCode::Char('3'));
-    assert_eq!(app.mode, Mode::Normal, "the `comments` binding closes it");
-
-    app.open_list();
-    press(&mut app, &keymap, KeyCode::Esc);
-    assert_eq!(app.mode, Mode::Normal, "`esc` closes it");
+    app.select_file(file_row(&app, "a.rs")).unwrap();
+    comment_on_line(&mut app, '+', "A1", "first");
+    comment_on_line(&mut app, '+', "A3", "second");
+    app.select_file(file_row(&app, "b.rs")).unwrap();
+    comment_on(&mut app, '+', "third");
+    (r, app)
 }
 
 #[test]
-fn the_comments_list_acts_through_the_same_bindings() {
+fn selecting_a_card_opens_it_and_the_arrows_run_on_through_the_stack() {
+    use diff_reckoner::app::Tab;
+    let (r, mut app) = three_card_app();
+    let keymap = Keymap::default();
+    let (open, cursor, focus) = (app.diff_path.clone(), app.diff_cursor, app.focus);
+    let before = (r.read("a.rs"), r.read("b.rs"));
+
+    press(&mut app, &keymap, KeyCode::Char('3'));
+    assert_eq!(app.tab, Tab::Comments);
+    assert!(!app.composing(), "entering the tab selects nothing new, so opens nothing");
+    press(&mut app, &keymap, KeyCode::Char('j'));
+    assert_eq!((app.comments.cursor, app.edited_card()), (1, Some(1)), "`j` opens the next card");
+    // One-line boxes: every `↓`/`↑` runs off the box's edge onto the next card.
+    press(&mut app, &keymap, KeyCode::Down);
+    assert_eq!(app.edited_card(), Some(2), "`↓` past the last row opens the card below");
+    press(&mut app, &keymap, KeyCode::Down);
+    assert_eq!(app.edited_card(), Some(2), "the last card has nowhere further to go");
+    press(&mut app, &keymap, KeyCode::Up);
+    press(&mut app, &keymap, KeyCode::Up);
+    assert_eq!(app.edited_card(), Some(0));
+    assert_eq!((r.read("a.rs"), r.read("b.rs")), before, "unchanged boxes write nothing");
+
+    // `esc` leaves the box, and the tab's keys work again: `f`/`F` open across files.
+    press(&mut app, &keymap, KeyCode::Esc);
+    assert!(!app.composing());
+    press(&mut app, &keymap, KeyCode::Char('f'));
+    assert_eq!(app.edited_card(), Some(2), "`f` opens the next file's first comment");
+    press(&mut app, &keymap, KeyCode::Esc);
+    press(&mut app, &keymap, KeyCode::Char('F'));
+    assert_eq!(app.edited_card(), Some(0), "`F` the previous file's first");
+    press(&mut app, &keymap, KeyCode::Esc);
+
+    // The file tabs' keys have nothing to act on here and leave the diff beneath alone.
+    for key in [KeyCode::Char('c'), KeyCode::Char('v'), KeyCode::Tab, KeyCode::Char(']')] {
+        press(&mut app, &keymap, key);
+    }
+    assert!(!app.composing());
+    assert_eq!((app.diff_path.clone(), app.diff_cursor, app.focus), (open, cursor, focus));
+    assert_eq!(app.select_anchor, None);
+    press(&mut app, &keymap, KeyCode::Char('q'));
+    assert!(app.should_quit, "`q` quits once the box is closed");
+}
+
+#[test]
+fn moving_off_a_card_saves_it_and_esc_reverts_it() {
+    use diff_reckoner::app::Tab;
+    let (r, mut app) = three_card_app();
+    let keymap = Keymap::default();
+    enter_tab(&mut app, Tab::Comments);
+    press(&mut app, &keymap, KeyCode::Char('j'));
+    typed(&mut app, " edited");
+    press(&mut app, &keymap, KeyCode::Down);
+    assert_eq!(app.edited_card(), Some(2));
+    assert!(r.read("a.rs").contains(&tag_line("second edited")), "the move saved it");
+    assert_eq!(app.status, "comment updated");
+
+    typed(&mut app, " dropped");
+    let b = r.read("b.rs");
+    press(&mut app, &keymap, KeyCode::Esc);
+    assert!(!app.composing());
+    assert_eq!(r.read("b.rs"), b, "`esc` writes nothing");
+    assert_eq!(app.store.get(2).unwrap().text, "third", "and the comment reads as before");
+}
+
+#[test]
+fn the_comments_tab_acts_through_the_rebindable_keys() {
+    use diff_reckoner::app::Tab;
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "note");
-    let keymap = Keymap::resolve(&[(Action::Delete, vec![Key::plain('x')])]).unwrap();
+    let keymap = Keymap::resolve(&[
+        (Action::Delete, vec![Key::plain('x')]),
+        (Action::OpenComment, vec![Key::plain('o')]),
+    ])
+    .unwrap();
 
-    app.open_list();
+    app.set_tab(Tab::Comments).unwrap();
     press(&mut app, &keymap, KeyCode::Char('d'));
-    assert_eq!(app.store.len(), 1, "the replaced default is inert in the list too");
+    assert_eq!(app.store.len(), 1, "the replaced default is inert");
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(app.tab, Tab::Comments, "a rebound `open-comment` frees `enter`");
+    press(&mut app, &keymap, KeyCode::Char('o'));
+    assert_eq!(app.tab, Tab::AllFiles, "the rebound key opens the comment");
+    press(&mut app, &keymap, KeyCode::Char('3'));
     press(&mut app, &keymap, KeyCode::Char('x'));
-    assert!(app.store.is_empty(), "the rebound `delete` acts on the highlighted row");
+    assert!(app.store.is_empty(), "the rebound `delete` acts on the selected card");
 }
 
 /// A repo with one markdown file and one code file, opened on the `All files` tab.
@@ -5587,7 +5739,7 @@ fn a_commits_diff_takes_no_comment_and_edit_opens_the_worktree_file() {
     app.select_file(0).unwrap();
     comment_on(&mut app, '+', "root note");
     app.set_scope(Scope::Commits).unwrap();
-    app.open_list();
+    app.set_tab(diff_reckoner::app::Tab::Comments).unwrap();
     assert!(app.footer_bands().iter().any(|&(a, _)| a == FooterAction::EditComment));
     app.start_edit();
     app.input.clear();
@@ -5597,7 +5749,6 @@ fn a_commits_diff_takes_no_comment_and_edit_opens_the_worktree_file() {
 
     // `e` on the All files read pane under `commits` still opens the worktree line: the
     // file view's numbers are the worktree's.
-    app.close_list();
     enter_tab(&mut app, diff_reckoner::app::Tab::AllFiles);
     app.select_file(file_row(&app, "one.rs")).unwrap();
     app.focus = diff_reckoner::app::Focus::Diff;
@@ -5901,4 +6052,43 @@ fn a_comment_on_the_last_removed_lines_goes_at_the_end_of_the_file() {
     );
     let c = app.store.get(0).unwrap();
     assert_eq!((c.start, c.anchor.as_deref()), (5, None), "nothing survives below it");
+}
+
+#[test]
+fn a_tag_counts_inside_a_comment_or_starting_a_line_of_a_file_without_comments() {
+    use diff_reckoner::app::Tab;
+    let tag = diff_reckoner::review::TAG;
+    let r = Repo::init();
+    r.write("a.rs", "fn a() {}\n");
+    r.write("docs/guide.md", &format!("# Guide\n\n```rust\n// {tag} an example\n```\n"));
+    r.write("data.json", "{}\n");
+    r.commit_all("init");
+    // A string literal in a file with comments is not a comment; a line the tag starts in a
+    // file without them is.
+    r.write("a.rs", &format!("fn a() {{}}\nlet t = \"{tag}\";\n"));
+    let json = format!("{{\n{tag} is this key needed?\n  \"k\": 1\n}}\n");
+    r.write("data.json", &json);
+    let mut app = app_on(&r);
+    let keymap = Keymap::default();
+
+    enter_tab(&mut app, Tab::Comments);
+    let found: Vec<(String, u32)> = app.store.iter().map(|c| (c.file.clone(), c.start)).collect();
+    assert_eq!(
+        found,
+        [("data.json".to_string(), 2)],
+        "the literal and the fenced example stay out"
+    );
+
+    // It is a comment like any other: it edits in its card and deletes back to the file.
+    press(&mut app, &keymap, KeyCode::Char('j'));
+    assert_eq!(app.edited_card(), Some(0));
+    typed(&mut app, " yes");
+    press(&mut app, &keymap, KeyCode::Enter);
+    // A rewrite indents its tag lines like the line they annotate, as in any file.
+    assert_eq!(
+        r.read("data.json"),
+        format!("{{\n  {tag} is this key needed? yes\n  \"k\": 1\n}}\n")
+    );
+    app.delete_comment();
+    assert_eq!(r.read("data.json"), "{\n  \"k\": 1\n}\n", "deleting restores the file");
 }

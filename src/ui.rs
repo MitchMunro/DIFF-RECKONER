@@ -21,6 +21,7 @@ use ratatui::widgets::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Band, Focus, FooterAction, Mode, Tab};
+use crate::comments_tab::{CardCode, CardHeight, NavRow};
 use crate::config::NavigatorPosition;
 use crate::diff::{FileDiff, FileState, Row};
 use crate::file_list::{Annotation, RowKind};
@@ -28,7 +29,7 @@ use crate::file_list::{Annotation, RowKind};
 use crate::git;
 
 use crate::keymap::Keymap;
-use crate::model::ChangeKind;
+use crate::model::{ChangeKind, Comment};
 use crate::theme::Palette;
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -92,13 +93,20 @@ fn render_frame(frame: &mut Frame, app: &App) {
     }
 
     render_tab_bar(frame, app, p.tab);
-    render_diff_view(frame, app, p.diff);
-    if !app.navigator_hidden_here() {
-        render_file_list(frame, app, p.files);
+    if app.tab == Tab::Comments {
+        render_comment_cards(frame, app, p.diff);
+        if !app.navigator_hidden_here() {
+            render_comment_nav(frame, app, p.files);
+        }
+    } else {
+        render_diff_view(frame, app, p.diff);
+        if !app.navigator_hidden_here() {
+            render_file_list(frame, app, p.files);
+        }
+        // The active text drag's highlight paints over the finished body, in the same
+        // geometry the body painted.
+        render_text_selection(frame, app, area);
     }
-    // The active text drag's highlight paints over the finished body, in the same geometry
-    // the body painted.
-    render_text_selection(frame, app, area);
     // One footer band on every tab, drawn after the per-tab base so it sits on both layouts.
     render_footer(frame, app, p.status);
 
@@ -106,7 +114,6 @@ fn render_frame(frame: &mut Frame, app: &App) {
     // paints, so a mode can never scrim the page and then draw nothing. Both popups place through
     // `body_popup`, so the footer just drawn stays uncovered and keeps advertising their keys.
     let popup: Option<fn(&mut Frame, &App, Rect)> = match app.mode {
-        Mode::List => Some(render_comments_list),
         Mode::BasePick => Some(render_base_picker),
         Mode::CommitPick => Some(render_commit_picker),
         Mode::Normal | Mode::Composing { .. } | Mode::Search | Mode::Find | Mode::ThemePick => None,
@@ -372,7 +379,7 @@ enum Dress {
 /// Every visible row's [`Dress`], indexed like `app.visible`.
 fn row_dress(app: &App) -> Vec<Dress> {
     let edited = match &app.mode {
-        Mode::Composing { editing: Some(c) } => app.store.iter().position(|s| s == c),
+        Mode::Composing { editing: Some(c) } => app.store.position_of(c),
         _ => None,
     };
     app.comment_rows()
@@ -962,9 +969,10 @@ pub fn composer_content_width(app: &App, width: usize) -> usize {
     width.saturating_sub(composer_indent(app) + 3).max(1)
 }
 
-/// The comment box's [`box_indent`].
+/// The comment box's [`box_indent`], under the open diff's gutter or the cards' shared one.
 fn composer_indent(app: &App) -> usize {
-    box_indent(gutter_for(&app.diff))
+    let gutter_w = if app.tab == Tab::Comments { cards_gutter(app) } else { gutter_for(&app.diff) };
+    box_indent(gutter_w)
 }
 
 /// The diff pane's inner content width for the full terminal `area`, so the event loop can
@@ -1171,8 +1179,6 @@ pub fn caret_vertical(input: &str, caret: usize, content_w: usize, down: bool) -
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HeaderHit {
     Tab(Tab),
-    /// The outstanding-comment count; the click opens the comments list.
-    Comments,
     Scope,
     /// The `branch` scope's base label; the click opens the base picker.
     Base,
@@ -1193,10 +1199,7 @@ pub fn hit_header(area: Rect, app: &App, keymap: &Keymap, col: u16, row: u16) ->
     let spans = tab_spans(keymap, app.store.len());
     for &(slot, start, end) in &spans {
         if (start as u16..end as u16).contains(&col) {
-            return Some(match slot {
-                TabSlot::Tab(tab) => HeaderHit::Tab(tab),
-                TabSlot::Comments => HeaderHit::Comments,
-            });
+            return Some(HeaderHit::Tab(slot));
         }
     }
     let prefix = header_prefix_len(&spans);
@@ -1219,24 +1222,17 @@ pub fn hit_header(area: Rect, app: &App, keymap: &Keymap, col: u16, row: u16) ->
     None
 }
 
-/// One entry in the header's tab strip: a tab, or the outstanding-comment count (design doc
-/// §6), which opens the comments list until a Comments tab replaces it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum TabSlot {
-    Tab(Tab),
-    Comments,
-}
-
 /// The tab strip's entries and their labels, left to right, each led by its action's hint key.
+/// The Comments tab carries the outstanding-comment count (design doc §6).
 /// Column math uses display width, since a bound hint key can be wide.
-fn tab_labels(keymap: &Keymap, comments: usize) -> [(TabSlot, String); 3] {
+fn tab_labels(keymap: &Keymap, comments: usize) -> [(Tab, String); 3] {
     use crate::keymap::Action as K;
     [
-        (TabSlot::Tab(Tab::Changes), format!("{} Changes", keymap.hint(K::TabChanges).label())),
-        (TabSlot::Tab(Tab::AllFiles), format!("{} Files", keymap.hint(K::TabAllFiles).label())),
+        (Tab::Changes, format!("{} Changes", keymap.hint(K::TabChanges).label())),
+        (Tab::AllFiles, format!("{} Files", keymap.hint(K::TabAllFiles).label())),
         (
-            TabSlot::Comments,
-            format!("{} Comments{}", keymap.hint(K::Comments).label(), comment_count(comments)),
+            Tab::Comments,
+            format!("{} Comments{}", keymap.hint(K::TabComments).label(), comment_count(comments)),
         ),
     ]
 }
@@ -1266,7 +1262,7 @@ fn indicator_glyph(app: &App) -> &'static str {
 
 /// Each entry's `(slot, start_col, end_col)` in the header, the single source the bar paints
 /// and the click hit-tests against.
-fn tab_spans(keymap: &Keymap, comments: usize) -> Vec<(TabSlot, usize, usize)> {
+fn tab_spans(keymap: &Keymap, comments: usize) -> Vec<(Tab, usize, usize)> {
     let mut col = HEADER_LEAD.len();
     let mut out = Vec::new();
     for (i, (slot, label)) in tab_labels(keymap, comments).iter().enumerate() {
@@ -1282,8 +1278,9 @@ fn tab_spans(keymap: &Keymap, comments: usize) -> Vec<(TabSlot, usize, usize)> {
 
 /// The tab-strip entry under the pointer, for the hover fill. Inert under a modal, like the
 /// gutter's hover `+`: the header takes no clicks there.
-fn hovered_tab(app: &App, line: Rect) -> Option<TabSlot> {
-    let (col, row) = app.hover.filter(|_| !app.mode.is_modal())?;
+fn hovered_tab(app: &App, line: Rect) -> Option<Tab> {
+    // A card's open box frees the header like the rest of the mouse (`handle_mouse`).
+    let (col, row) = app.hover.filter(|_| !app.mode.is_modal() || app.edited_card().is_some())?;
     if row != line.y || !(line.x..line.x + line.width).contains(&col) {
         return None;
     }
@@ -1296,7 +1293,7 @@ fn hovered_tab(app: &App, line: Rect) -> Option<TabSlot> {
 
 /// The column where the scope chip starts: past the tab bar, its reserved spinner cell,
 /// and its trailing gap.
-fn header_prefix_len(spans: &[(TabSlot, usize, usize)]) -> usize {
+fn header_prefix_len(spans: &[(Tab, usize, usize)]) -> usize {
     spans.last().map_or(HEADER_LEAD.len(), |&(_, _, end)| end) + INDICATOR_CELL + HEADER_GAP.len()
 }
 
@@ -1426,10 +1423,7 @@ fn tab_bar_spans(app: &App, line: Rect) -> Vec<Span<'static>> {
         if i > 0 {
             spans.push(Span::styled(TAB_GAP, bar));
         }
-        let active = match slot {
-            TabSlot::Tab(tab) => tab == app.tab && app.mode != Mode::List,
-            TabSlot::Comments => app.mode == Mode::List,
-        };
+        let active = slot == app.tab;
         let style = if active {
             bar.bg(p.sel_bg).fg(p.sel_fg.unwrap_or(p.text)).add_modifier(Modifier::BOLD)
         } else if hovered == Some(slot) {
@@ -1441,7 +1435,7 @@ fn tab_bar_spans(app: &App, line: Rect) -> Vec<Span<'static>> {
         // underline runs under the label alone.
         let pad = if active { style } else { bar };
         spans.push(Span::styled(PILL_PAD, pad));
-        if slot == TabSlot::Comments && comments > 0 {
+        if slot == Tab::Comments && comments > 0 {
             // The count wears the comment dot's hue so it reads at a glance, except on the
             // active fill, where the hue would sink into the blue. The two parts spell out
             // `label`, which the column math measures.
@@ -1543,6 +1537,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
         let gone = app.commits_gone_message();
         let msg = match app.tab {
             Tab::AllFiles => "no files",
+            Tab::Comments => "no comments",
             Tab::Changes if app.commits_gone() => gone.as_str(),
             Tab::Changes => "no changes",
         };
@@ -1809,7 +1804,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
         (Some(new), None) => new.clone(),
         (None, _) => match app.tab {
             Tab::AllFiles => "File",
-            Tab::Changes => "Diff",
+            Tab::Changes | Tab::Comments => "Diff",
         }
         .to_string(),
     };
@@ -1833,7 +1828,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
                 FileState::Normal => "select a file to read",
             },
             Tab::Changes if app.commits_gone() => gone.as_str(),
-            Tab::Changes => match app.diff.state {
+            Tab::Changes | Tab::Comments => match app.diff.state {
                 FileState::Binary => "binary — no line comments",
                 FileState::TooLarge => "file too large to diff",
                 FileState::Normal => "no diff",
@@ -2421,56 +2416,76 @@ fn render_note_row(
     } else {
         Style::default().fg(p.text).add_modifier(Modifier::BOLD)
     };
-    let indent = box_indent(gutter_w).min(width.saturating_sub(3));
-    let content_w = note_content_width(gutter_w, width);
-    let pad = Span::raw(" ".repeat(indent));
-    // The box's first text row carries its line number in place of the left side, the last
-    // digit on the side's column so the number sits where the gutter paints its own.
-    let number = c.start.to_string();
-    let numbered = Span::styled(
-        format!("{}{number}", " ".repeat((indent + 1).saturating_sub(number.len()))),
+    let paint = NoteBox {
+        indent: box_indent(gutter_w).min(width.saturating_sub(3)),
+        content_w: note_content_width(gutter_w, width),
+        width,
         border,
-    );
+        text: text_style,
+    };
     let mut first_body = false;
     note_lines(app, dress, i, comment, gutter_w, width)
         .into_iter()
-        .map(|line| match line {
-            NoteLine::Top => {
-                let title =
-                    framed_title(&c.deleted.as_deref().map_or(BOX_TITLE.to_string(), |d| {
-                        format!("{BOX_TITLE} · on deleted: {d}")
-                    }));
-                first_body = true;
-                let mut top = format!("┌─{title}");
-                let fill = width.saturating_sub(indent + top.width() + 1);
-                top.push_str(&"─".repeat(fill));
-                top.push('┐');
-                Line::from(vec![pad.clone(), Span::styled(top, border)])
-            }
-            NoteLine::Body(text) => {
-                let gap = " ".repeat(content_w.saturating_sub(text.width()));
-                let side = if std::mem::take(&mut first_body) {
-                    vec![numbered.clone()]
-                } else {
-                    vec![pad.clone(), Span::styled("│", border)]
-                };
-                Line::from(
-                    [
-                        side,
-                        vec![
-                            Span::styled(format!(" {text}{gap}"), text_style),
-                            Span::styled("│", border),
-                        ],
-                    ]
-                    .concat(),
-                )
-            }
-            NoteLine::Bottom => Line::from(vec![
-                pad.clone(),
-                Span::styled(format!("└{}┘", "─".repeat(content_w + 1)), border),
-            ]),
+        .map(|line| {
+            let numbered = matches!(line, NoteLine::Body(_)) && std::mem::take(&mut first_body);
+            first_body |= matches!(line, NoteLine::Top);
+            note_line(&line, c, numbered, &paint)
         })
         .collect()
+}
+
+/// How a resting comment box paints: its left indent, its text width, the row width it
+/// spans, and its border and text styles.
+struct NoteBox {
+    indent: usize,
+    content_w: usize,
+    width: usize,
+    border: Style,
+    text: Style,
+}
+
+/// One display line of comment `c`'s resting box. `numbered` marks the box's first text row,
+/// which carries the comment's line number in place of the left side, the last digit on the
+/// side's column so the number sits where the gutter paints its own.
+fn note_line(line: &NoteLine, c: &Comment, numbered: bool, b: &NoteBox) -> Line<'static> {
+    let pad = Span::raw(" ".repeat(b.indent));
+    match line {
+        NoteLine::Top => {
+            let title = framed_title(&match &c.deleted {
+                Some(d) => format!("{BOX_TITLE} · on deleted: {d}"),
+                None => BOX_TITLE.to_string(),
+            });
+            let mut top = format!("┌─{title}");
+            let fill = b.width.saturating_sub(b.indent + top.width() + 1);
+            top.push_str(&"─".repeat(fill));
+            top.push('┐');
+            Line::from(vec![pad, Span::styled(top, b.border)])
+        }
+        NoteLine::Body(text) => {
+            let gap = " ".repeat(b.content_w.saturating_sub(text.width()));
+            let side = if numbered {
+                let number = c.start.to_string();
+                let lead = " ".repeat((b.indent + 1).saturating_sub(number.len()));
+                vec![Span::styled(format!("{lead}{number}"), b.border)]
+            } else {
+                vec![pad, Span::styled("│", b.border)]
+            };
+            Line::from(
+                [
+                    side,
+                    vec![
+                        Span::styled(format!(" {text}{gap}"), b.text),
+                        Span::styled("│", b.border),
+                    ],
+                ]
+                .concat(),
+            )
+        }
+        NoteLine::Bottom => Line::from(vec![
+            pad,
+            Span::styled(format!("└{}┘", "─".repeat(b.content_w + 1)), b.border),
+        ]),
+    }
 }
 
 /// The inline comment input box, drawn across `band`, in the resting box's shape: the line
@@ -2639,6 +2654,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::EditComment => (hint(K::Edit), "edit"),
         A::EditFile => (hint(K::Edit), "edit file"),
         A::DeleteComment => (hint(K::Delete), "delete"),
+        A::OpenInFiles => (hint(K::OpenComment), "open in files"),
         A::JumpComment => (format!("{}/{}", hint(K::NextComment), hint(K::PrevComment)), "jump"),
         A::ExpandFold => (hint(K::Expand), "expand fold"),
         // The armed crossing is keyed to the hunk step that armed it, so a rebound `next-hunk`
@@ -2669,12 +2685,13 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
             ),
             "scope",
         ),
-        A::List => (hint(K::Comments), "comments"),
         A::Copy => (hint(K::Copy), "copy"),
         A::Save | A::SaveTheme => ("enter".into(), "save"),
         A::Newline => ("shift+enter".into(), "newline"),
         A::Cancel | A::ClosePicker => ("esc".into(), "cancel"),
-        A::CloseList | A::CloseSearch | A::CloseFind => ("esc".into(), "close"),
+        A::Revert => ("esc".into(), "revert"),
+        A::StepCard => ("↑↓".into(), "comments"),
+        A::CloseSearch | A::CloseFind => ("esc".into(), "close"),
         // The digits are literal, so they are spelled; the two movement keys are bound, so they
         // read off the keymap like every other hint.
         A::BasePick => (hint(K::BasePick), "base"),
@@ -2719,7 +2736,10 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         // `enter` opens the highlight in every list: a search result, a base, a commit run.
         A::OpenResult | A::PickBaseRow => ("enter".into(), "open"),
         A::Refresh => (hint(K::Refresh), "refresh"),
-        A::Tabs => (format!("{}·{}", hint(K::TabChanges), hint(K::TabAllFiles)), "tabs"),
+        A::Tabs => (
+            format!("{}·{}·{}", hint(K::TabChanges), hint(K::TabAllFiles), hint(K::TabComments)),
+            "tabs",
+        ),
         A::Quit => (hint(K::Quit), "quit"),
     };
     (k, l.into())
@@ -2997,42 +3017,310 @@ fn render_band(
     lines
 }
 
-/// The comments list is a browse surface, not a menu: its box is a fraction of the body rather
-/// than its content's size, so the geometry holds still while comments come and go.
-const LIST_POPUP_W_PCT: u16 = 80;
-const LIST_POPUP_H_PCT: u16 = 70;
+// --- Comments tab (design doc §5.3) ----------------------------------------------------
 
-fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
+/// One display line of a card in the Comments tab's stack.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CardLine {
+    /// The card's `path:line` heading.
+    Heading,
+    /// A context line above the comment (`above`) or below it: its index there, and its wrap
+    /// segment.
+    Code { above: bool, row: usize, seg: usize },
+    /// Line `k` of the resting comment box.
+    Note(usize),
+    /// A line of the open comment box, which `render_composer` paints over the run.
+    Composer,
+    /// The blank line closing the card.
+    Gap,
+}
+
+/// What a click on the Comments tab lands on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CommentsHit {
+    /// A navigator comment row.
+    NavComment(usize),
+    /// A navigator file row: its first comment.
+    NavFile(usize),
+    /// A card's `path:line`, and on the selected card the open hint beside it.
+    Heading(usize),
+    /// A card's comment box.
+    Box(usize),
+    /// Anywhere else on a card.
+    Card(usize),
+}
+
+/// The gap between a heading's location and the selected card's open hint.
+const HEADING_GAP: &str = "  ";
+
+/// The hint after the selected card's location, naming the key that opens it in `All files`.
+fn open_hint(app: &App) -> String {
+    format!("{} open in files", app.keymap().hint(crate::keymap::Action::OpenComment).label())
+}
+
+/// The heading's clickable width from the pane's inner left edge: the lead, the location,
+/// and the hint where it shows. One measure for the paint and the hit test.
+fn heading_width(app: &App, c: &Comment, selected: bool) -> usize {
+    let hint = if selected { HEADING_GAP.width() + open_hint(app).width() } else { 0 };
+    1 + c.location().width() + hint
+}
+
+/// The line-number column width every card shares, sized to the largest number any card
+/// paints, so the code lines up card to card.
+fn cards_gutter(app: &App) -> usize {
+    let last = app.store.iter().map(|c| c.end as usize + c.after.len()).max().unwrap_or(0);
+    gutter_width(last)
+}
+
+/// Comment `c`'s whole resting box at `content_w`: the top border, each tag line's text
+/// wrapped to the box, the bottom border.
+fn card_note_lines(c: &Comment, content_w: usize) -> Vec<NoteLine> {
+    let mut out = vec![NoteLine::Top];
+    for text in c.text.split('\n') {
+        out.extend(box_rows(text, content_w).into_iter().map(|(_, t)| NoteLine::Body(t)));
+    }
+    out.push(NoteLine::Bottom);
+    out
+}
+
+/// Card `i`'s display lines at the stack's `width`, top to bottom: the one walk behind the
+/// painter, the heights, and the hit test.
+fn card_lines(
+    app: &App,
+    i: usize,
+    code: &CardCode,
+    gutter_w: usize,
+    width: usize,
+) -> Vec<CardLine> {
+    let Some(c) = app.store.get(i) else { return Vec::new() };
+    let code_lines = |out: &mut Vec<CardLine>, rows: &[Row], above: bool| {
+        for (row, r) in rows.iter().enumerate() {
+            let segs = row_height(r, gutter_w, width, app.wrap);
+            out.extend((0..segs).map(|seg| CardLine::Code { above, row, seg }));
+        }
+    };
+    let mut out = vec![CardLine::Heading];
+    code_lines(&mut out, &code.before, true);
+    if app.edited_card() == Some(i) {
+        out.extend(std::iter::repeat_n(CardLine::Composer, composer_height(app, width)));
+    } else {
+        let n = card_note_lines(c, note_content_width(gutter_w, width)).len();
+        out.extend((0..n).map(CardLine::Note));
+    }
+    code_lines(&mut out, &code.after, false);
+    out.push(CardLine::Gap);
+    out
+}
+
+/// Every card's height at the card pane's width, and how much of it a reveal keeps on
+/// screen: the heading through the comment box.
+#[must_use]
+pub fn card_heights(app: &App, area: Rect) -> Vec<CardHeight> {
+    let width = inner_rect(panes(area, app).diff).width as usize;
+    let gutter_w = cards_gutter(app);
+    (0..app.store.len())
+        .map(|i| {
+            let lines = card_lines(app, i, &app.card_code(i), gutter_w, width);
+            let keep = lines
+                .iter()
+                .rposition(|l| matches!(l, CardLine::Note(_) | CardLine::Composer))
+                .map_or(lines.len(), |k| k + 1);
+            CardHeight { lines: lines.len(), keep }
+        })
+        .collect()
+}
+
+/// Card `i`'s painted lines, one per [`CardLine`]. The context rows paint as the diff paints
+/// unchanged lines; the box is the diff's resting box, brighter on the selected card.
+fn paint_card(
+    app: &App,
+    i: usize,
+    code: &CardCode,
+    lines: &[CardLine],
+    gutter_w: usize,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let Some(c) = app.store.get(i) else { return Vec::new() };
     let p = app.palette();
-    let body = panes(area, app).body;
-    let w = body.width * LIST_POPUP_W_PCT / 100;
-    let h = body.height * LIST_POPUP_H_PCT / 100;
-    let popup = body_popup(area, app, w, h);
-    frame.render_widget(Clear, popup);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(p.purple))
-        .title(framed_title(&format!("Comments ({})", app.store.len())));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-
-    let width = inner.width as usize;
-    let items: Vec<ListItem> = app
-        .store
+    let selected = i == app.comments.cursor;
+    let layout = RowLayout {
+        gutter_w,
+        width,
+        h_scroll: 0,
+        wrap: app.wrap,
+        focused: true,
+        pal: p,
+        find: None,
+        expand_hint: "",
+    };
+    let state = RowState { cursor: false, selected: false, hovered: false, pushed: false };
+    let mut rows: Option<((bool, usize), Vec<Line<'static>>)> = None;
+    // The selection is the comment itself: its box wears the cursor, as the diff's cursor
+    // on a tag line does, so `edit` plainly acts on it.
+    let (border, text) = if !selected {
+        (Style::default().fg(p.dim1), Style::default().fg(p.dim0))
+    } else if let Some(bg) = p.cursor_bg(true) {
+        (Style::default().fg(p.text), Style::default().bg(bg).fg(p.sel_fg.unwrap_or(p.text)))
+    } else {
+        (Style::default().fg(p.text), Style::default().fg(p.text).add_modifier(Modifier::BOLD))
+    };
+    let paint = NoteBox {
+        indent: box_indent(gutter_w).min(width.saturating_sub(3)),
+        content_w: note_content_width(gutter_w, width),
+        width,
+        border,
+        text,
+    };
+    let notes = card_note_lines(c, paint.content_w);
+    lines
         .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let loc = Span::styled(
-                format!(" {}", c.location()),
-                Style::default().fg(p.purple).add_modifier(Modifier::BOLD),
-            );
-            let text = c.display_text().replace('\n', " ");
-            let spans = vec![loc, Span::styled(format!("  {text}"), text_style(p))];
-            // The list overlay is the active modal, so its row reads at full brightness.
-            selectable_row(p, spans, width, RowCursor::at(i == app.list_cursor, true))
+        .map(|line| match *line {
+            CardLine::Heading => {
+                let loc = Style::default().fg(comment_hue(p)).add_modifier(Modifier::BOLD);
+                let mut spans = vec![Span::raw(" "), Span::styled(c.location(), loc)];
+                if selected {
+                    spans.push(Span::raw(HEADING_GAP));
+                    spans.push(Span::styled(open_hint(app), Style::default().fg(p.dim2)));
+                }
+                Line::from(spans)
+            }
+            CardLine::Code { above, row, seg } => {
+                if rows.as_ref().is_none_or(|(key, _)| *key != (above, row)) {
+                    let source = if above { &code.before } else { &code.after };
+                    let painted = source.get(row).map(|r| render_row(r, layout, state));
+                    rows = Some(((above, row), painted.unwrap_or_default()));
+                }
+                rows.as_ref().and_then(|(_, l)| l.get(seg).cloned()).unwrap_or_default()
+            }
+            // The box's first text row, under its top border, carries the number.
+            CardLine::Note(k) => {
+                notes.get(k).map(|n| note_line(n, c, k == 1, &paint)).unwrap_or_default()
+            }
+            CardLine::Composer | CardLine::Gap => Line::default(),
+        })
+        .collect()
+}
+
+/// The Comments tab's card stack: every comment in the repo, each with its context either
+/// side, from the view's top card down.
+fn render_comment_cards(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let block = bordered("Comments", p);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.store.is_empty() {
+        app.note_card_slots(Vec::new());
+        frame.render_widget(dim_paragraph("no comments", p), inner);
+        return;
+    }
+    let (width, height) = (inner.width as usize, inner.height as usize);
+    let gutter_w = cards_gutter(app);
+    let mut slots: Vec<(usize, CardLine)> = Vec::new();
+    let mut lines: Vec<Line> = Vec::new();
+    for i in app.comments.top..app.store.len() {
+        if slots.len() >= height {
+            break;
+        }
+        let code = app.card_code(i);
+        let card = card_lines(app, i, &code, gutter_w, width);
+        let painted = paint_card(app, i, &code, &card, gutter_w, width);
+        let skip = if i == app.comments.top { app.comments.top_offset } else { 0 };
+        for (line, paint) in card.into_iter().zip(painted).skip(skip).take(height - slots.len()) {
+            slots.push((i, line));
+            lines.push(paint);
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+    if let Some(from) = slots.iter().position(|(_, l)| *l == CardLine::Composer) {
+        let n = slots[from..].iter().take_while(|(_, l)| *l == CardLine::Composer).count();
+        let band = Rect { y: inner.y + from as u16, height: n as u16, ..inner };
+        render_composer(frame, app, band);
+    }
+    app.note_card_slots(slots);
+}
+
+/// The Comments tab's navigator: each file holding comments, its comments one line each
+/// under it, the selected one wearing the cursor.
+fn render_comment_nav(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let block = bordered("Files", p);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = app.comment_nav_rows();
+    if rows.is_empty() {
+        frame.render_widget(dim_paragraph("no comments", p), inner);
+        return;
+    }
+    let width = inner.width as usize;
+    let num_w = app.store.iter().map(|c| c.start.to_string().len()).max().unwrap_or(1);
+    let items: Vec<ListItem> = rows
+        .iter()
+        .skip(app.comments.nav_scroll)
+        .take(inner.height as usize)
+        .map(|row| match row {
+            NavRow::File { path, count, .. } => {
+                let count = format!("{count} ");
+                let shown = elide_head(path, width.saturating_sub(count.width() + 2).max(1));
+                let (dir, base) =
+                    shown.rsplit_once('/').map_or(("", shown.as_str()), |(d, b)| (d, b));
+                let dir = if dir.is_empty() { String::new() } else { format!("{dir}/") };
+                let mut spans = vec![
+                    Span::raw(" "),
+                    Span::styled(dir, Style::default().fg(p.dim2)),
+                    Span::styled(base.to_string(), text_style(p).add_modifier(Modifier::BOLD)),
+                ];
+                let used: usize = spans.iter().map(Span::width).sum();
+                spans.push(Span::raw(" ".repeat(width.saturating_sub(used + count.width()))));
+                spans.push(Span::styled(count, Style::default().fg(comment_hue(p))));
+                ListItem::new(Line::from(spans))
+            }
+            NavRow::Comment(i) => {
+                let Some(c) = app.store.get(*i) else { return ListItem::new(Line::default()) };
+                let lead = format!("   {:>num_w$}  ", c.start);
+                let first = c.display_text().lines().next().unwrap_or_default().to_string();
+                let text = truncate_width(&first, width.saturating_sub(lead.width()));
+                let spans = vec![
+                    Span::styled(lead, Style::default().fg(p.dim1)),
+                    Span::styled(text, Style::default().fg(p.dim0)),
+                ];
+                selectable_row(p, spans, width, RowCursor::at(*i == app.comments.cursor, true))
+            }
         })
         .collect();
     frame.render_widget(List::new(items), inner);
+}
+
+/// What a click at `(col, row)` lands on in the Comments tab, against the painted frame.
+#[must_use]
+pub fn comments_hit(area: Rect, app: &App, col: u16, row: u16) -> Option<CommentsHit> {
+    let bands = panes(area, app);
+    let nav = inner_rect(bands.files);
+    if contains(nav, col, row) {
+        let rows = app.comment_nav_rows();
+        return match rows.get((row - nav.y) as usize + app.comments.nav_scroll)? {
+            NavRow::File { first, .. } => Some(CommentsHit::NavFile(*first)),
+            NavRow::Comment(i) => Some(CommentsHit::NavComment(*i)),
+        };
+    }
+    let cards = inner_rect(bands.diff);
+    if !contains(cards, col, row) {
+        return None;
+    }
+    let (i, line) = *app.painted_card_slots().get((row - cards.y) as usize)?;
+    Some(match line {
+        CardLine::Heading => {
+            let c = app.store.get(i)?;
+            let at = (col - cards.x) as usize;
+            if (1..heading_width(app, c, i == app.comments.cursor)).contains(&at) {
+                CommentsHit::Heading(i)
+            } else {
+                CommentsHit::Card(i)
+            }
+        }
+        CardLine::Note(_) => CommentsHit::Box(i),
+        CardLine::Composer => return None,
+        CardLine::Code { .. } | CardLine::Gap => CommentsHit::Card(i),
+    })
 }
 
 /// A popup box of `w` × `h`, centered in the body band and clamped to it. Both popups place
@@ -4159,10 +4447,20 @@ impl RowCursor {
 /// widget, matching the diff's `Paragraph` rows.
 fn selectable_row(
     p: &Palette,
-    mut spans: Vec<Span<'static>>,
+    spans: Vec<Span<'static>>,
     width: usize,
     cursor: RowCursor,
 ) -> ListItem<'static> {
+    ListItem::new(selectable_line(p, spans, width, cursor))
+}
+
+/// [`selectable_row`]'s line, for a surface painted as a `Paragraph`.
+fn selectable_line(
+    p: &Palette,
+    mut spans: Vec<Span<'static>>,
+    width: usize,
+    cursor: RowCursor,
+) -> Line<'static> {
     if cursor != RowCursor::Off {
         let fill = p.cursor_bg(cursor == RowCursor::Focused);
         let used: usize = spans.iter().map(Span::width).sum();
@@ -4187,7 +4485,7 @@ fn selectable_row(
             on_cursor_fill(p, &mut spans);
         }
     }
-    ListItem::new(Line::from(spans))
+    Line::from(spans)
 }
 
 /// Give the text on a `sel_bg` fill the palette's `sel_fg`, where it has one. A span with its

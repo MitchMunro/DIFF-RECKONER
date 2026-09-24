@@ -14,6 +14,9 @@ use crate::model::Comment;
 /// The tag every comment line carries, greppable as a fixed string.
 pub const TAG: &str = "[- REVIEW -]";
 
+/// Lines of the file a comment carries from each side of its tag lines (§5.3).
+pub const CONTEXT_LINES: usize = 5;
+
 /// How many characters of a removed line a `[DELETED: (...)]` marker keeps.
 const DELETED_LEN: usize = 16;
 
@@ -125,10 +128,11 @@ pub fn scan<'a>(repo: &Path, extra: impl IntoIterator<Item = &'a String>) -> Res
     Ok(out)
 }
 
-/// The comments in `content`, the text of `path`. Only lines led by the file's own comment
-/// leader count, so a string literal quoting the tag is not a comment.
+/// The comments in `content`, the text of `path`. Where the language has line comments, only
+/// lines led by its own leader count, so a string literal quoting the tag is not a comment.
+/// Where it has none, a line the tag starts is one, as in prose.
 pub fn parse(path: &str, content: &str) -> Vec<Comment> {
-    let Some(prefix) = line_prefix(path) else { return Vec::new() };
+    let prefix = read_prefix(path);
     let lines: Vec<&str> = content.split_inclusive('\n').collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -152,10 +156,23 @@ pub fn parse(path: &str, content: &str) -> Vec<Comment> {
             text: body.join("\n"),
             deleted,
             anchor: lines.get(i + 1).map(|l| strip_eol(l).to_string()),
+            before: context_above(&lines, start),
+            after: context_below(&lines, i),
         });
         i += 1;
     }
     out
+}
+
+/// Up to [`CONTEXT_LINES`] lines above index `start`, verbatim.
+fn context_above(lines: &[&str], start: usize) -> Vec<String> {
+    lines[start.saturating_sub(CONTEXT_LINES)..start].iter().map(|l| strip_eol(l).into()).collect()
+}
+
+/// Up to [`CONTEXT_LINES`] lines below index `end`, verbatim.
+fn context_below(lines: &[&str], end: usize) -> Vec<String> {
+    let to = (end + 1 + CONTEXT_LINES).min(lines.len());
+    lines[(end + 1).min(to)..to].iter().map(|l| strip_eol(l).into()).collect()
 }
 
 /// Write a new comment into `path` at `at`.
@@ -184,7 +201,7 @@ pub fn add(repo: &Path, path: &str, at: &Placement, text: &str) -> Result<(), Wr
 
 /// Replace comment `c`'s text in place, keeping its `[DELETED: (...)]` marker.
 pub fn rewrite(repo: &Path, c: &Comment, text: &str) -> Result<(), WriteError> {
-    let prefix = prefix_for(&c.file)?;
+    let prefix = read_prefix(&c.file);
     let content = read_text(repo, &c.file)?;
     let c = locate(&content, c)?;
     let removed = remove(&content, c.start, c.end);
@@ -316,6 +333,13 @@ fn prefix_for(path: &str) -> Result<&'static str, WriteError> {
     })
 }
 
+/// The leader a tag line in `path` is read with: its line comment, else none, so in a file with
+/// no line-comment syntax a line the tag starts is a comment. A new comment is still refused
+/// there ([`prefix_for`]), but one already in the file can be rewritten and removed.
+fn read_prefix(path: &str) -> &'static str {
+    line_prefix(path).unwrap_or("")
+}
+
 fn read_text(repo: &Path, path: &str) -> Result<String, WriteError> {
     let bytes = std::fs::read(repo.join(path)).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => WriteError::Missing,
@@ -375,6 +399,27 @@ mod tests {
         assert_eq!(found[0].text, "held across an await\nwhich deadlocks");
         assert_eq!(found[0].anchor.as_deref(), Some("    let x = lock();"));
         assert_eq!((found[1].start, found[1].anchor.as_deref()), (5, None));
+    }
+
+    #[test]
+    fn a_comment_carries_up_to_five_lines_of_context_each_side() {
+        let above = (1..=7).map(|n| format!("a{n}\n")).collect::<Vec<_>>().concat();
+        let content = format!("{above}{}\nb1\nb2\n", tagged("#", "note"));
+        let found = parse("x.py", &content);
+        assert_eq!(found[0].before, ["a3", "a4", "a5", "a6", "a7"]);
+        // Short of five below: the file's end cuts the window.
+        assert_eq!(found[0].after, ["b1", "b2"]);
+        let top = parse("x.py", &format!("{}\nb1\n", tagged("#", "first line")));
+        assert!(top[0].before.is_empty());
+    }
+
+    #[test]
+    fn a_file_without_line_comments_takes_a_line_the_tag_starts() {
+        let content = format!("{{\n{TAG} check this key\n  \"k\": \"{TAG}\"\n}}\n");
+        let found = parse("a.json", &content);
+        assert_eq!(found.len(), 1, "the tag inside a value is not a comment");
+        assert_eq!((found[0].start, found[0].text.as_str()), (2, "check this key"));
+        assert!(parse("a.html", &format!("<!-- {TAG} fix -->\n")).is_empty());
     }
 
     #[test]

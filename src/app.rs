@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
+use crate::comments_tab::{CommentsView, NavRow, Reveal};
 use crate::diff::{DiffCache, FileDiff, Row, View};
 use crate::export::{ExportTarget, format_all};
 use crate::file_list::{self, Annotation, Entry, RowKind};
@@ -60,11 +61,13 @@ enum Anchor {
     Dir(String),
 }
 
-/// Which top-level tab is active: the changes reviewer or the whole-repo browser.
+/// Which top-level tab is active: the changes reviewer, the whole-repo browser, or every
+/// comment in the repo (design doc §5.3).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Changes,
     AllFiles,
+    Comments,
 }
 
 impl Tab {
@@ -376,8 +379,6 @@ pub enum Mode {
     Composing {
         editing: Option<Comment>,
     },
-    /// Browsing the comments-list overlay.
-    List,
     /// Choosing the `branch` scope's base. Its state lives in
     /// [`App::base_picker`].
     BasePick,
@@ -403,7 +404,7 @@ impl Mode {
     /// `Search` replaces the body rather than holding a place in it, and `Find` is a band the
     /// reviewer navigates the live diff with. Neither freezes anything, so neither is modal here.
     pub fn is_modal(&self) -> bool {
-        matches!(self, Mode::Composing { .. } | Mode::List | Mode::BasePick | Mode::CommitPick)
+        matches!(self, Mode::Composing { .. } | Mode::BasePick | Mode::CommitPick)
     }
 }
 
@@ -558,6 +559,8 @@ pub enum FooterAction {
     EditComment,
     EditFile,
     DeleteComment,
+    /// Open the Comments tab's selected comment in `All files`, the cursor on it.
+    OpenInFiles,
     JumpComment,
     ExpandFold,
     /// Take the armed crossing: the hunk step that armed it leaves the file when pressed again.
@@ -604,12 +607,14 @@ pub enum FooterAction {
     MoveThemeRow,
     ThemeSide,
     Scope,
-    List,
     Copy,
     Save,
     Newline,
     Cancel,
-    CloseList,
+    /// Leave a Comments-tab card's box without saving.
+    Revert,
+    /// Save a Comments-tab card's box and open the card above or below.
+    StepCard,
     ClosePicker,
     /// Open the base picker.
     BasePick,
@@ -701,9 +706,6 @@ pub struct App {
     /// The file crossing a hunk step armed when it found no further hunk in the open file. The
     /// next step the same way takes it, and any other input drops it.
     armed_cross: Option<ArmedCross>,
-    /// Whether the current compose was opened from the comments-list overlay, so finishing it
-    /// returns there rather than dropping to the diff.
-    resume_list: bool,
     /// Directory paths toggled away from the tab's resting state — collapsed in `Changes`
     /// (expanded by default), expanded in `All files` (collapsed by default). Keyed by path,
     /// so it survives a poll that rebuilds the tree.
@@ -760,6 +762,9 @@ pub struct App {
     /// recording every read-pane hit test indexes, so no map can disagree with the screen.
     /// A mid-event scroll re-runs the walk (`ui::refresh_read_layout`)
     painted_slots: std::cell::RefCell<Vec<crate::ui::Slot>>,
+    /// The Comments tab's card lines as painted this frame (`ui::render_comment_cards`),
+    /// each with its card: the recording its click hit test indexes.
+    painted_cards: std::cell::RefCell<Vec<(usize, crate::ui::CardLine)>>,
     /// The painted markdown body's heading anchors as `(slug, content line index)`,
     /// covering the whole body — an anchor click can jump past the viewport.
     painted_anchors: std::cell::RefCell<Vec<(String, usize)>>,
@@ -801,7 +806,11 @@ pub struct App {
     /// The git-ignored file a first `comment` press warned about; the next press on it writes.
     /// Any other key disarms it.
     pub ignored_confirm: Option<String>,
-    pub list_cursor: usize,
+    /// The Comments tab's selection and scroll.
+    pub comments: CommentsView,
+    /// The Comments tab's highlighted context rows, per card. Interior-mutable so the
+    /// renderer fills it from `&App`; cleared with the diff cache on a theme switch.
+    card_rows: std::cell::RefCell<crate::comments_tab::CardRows>,
     /// The base picker's rows, filter, and highlight while `Mode::BasePick` is open
     pub base_picker: Option<BasePicker>,
     /// The theme picker's side and highlights while `Mode::ThemePick` is open.
@@ -917,7 +926,6 @@ impl App {
             reveal_files: false,
             reveal_diff: false,
             armed_cross: None,
-            resume_list: false,
             toggled_dirs: HashSet::new(),
             stash: TabStash::default(),
             changed: HashMap::new(),
@@ -937,6 +945,7 @@ impl App {
             pane_width: std::cell::Cell::new(0),
             painted_links: std::cell::RefCell::new(Vec::new()),
             painted_slots: std::cell::RefCell::new(Vec::new()),
+            painted_cards: std::cell::RefCell::new(Vec::new()),
             painted_anchors: std::cell::RefCell::new(Vec::new()),
             painted_details: std::cell::RefCell::new(Vec::new()),
             preview_expanded_details: HashSet::new(),
@@ -955,7 +964,8 @@ impl App {
             store: CommentStore::new(),
             ignored_comment_files: BTreeSet::new(),
             ignored_confirm: None,
-            list_cursor: 0,
+            comments: CommentsView::default(),
+            card_rows: std::cell::RefCell::new(crate::comments_tab::CardRows::default()),
             base_picker: None,
             theme_picker: None,
             mode: Mode::Normal,
@@ -1005,6 +1015,7 @@ impl App {
             self.cache = DiffCache::new();
             self.markdown_cache.borrow_mut().clear();
             self.snippet_cache.borrow_mut().clear();
+            self.card_rows.borrow_mut().clear();
         }
     }
 
@@ -1196,7 +1207,12 @@ impl App {
     pub(crate) fn carry_authored_state_from(&mut self, old: &mut Self) {
         self.store = std::mem::take(&mut old.store);
         self.ignored_comment_files = std::mem::take(&mut old.ignored_comment_files);
-        self.list_cursor = old.list_cursor;
+        self.comments = std::mem::take(&mut old.comments);
+        // The Comments tab paints from the store alone, so it survives recovery in any mode;
+        // the file tab beneath it is the fresh app's.
+        if old.tab == Tab::Comments {
+            self.tab = Tab::Comments;
+        }
         // The footer expansion is one global toggle, carried regardless of the recovered mode
         self.keys_expanded = old.keys_expanded;
         // The commit pick is session memory like the comments: replaced, never cleared
@@ -1220,7 +1236,7 @@ impl App {
             // the agent picker before the mode is stored, so none reaches recovery; the search
             // query is not restored and the picker's frozen rows are not either.
             Mode::Normal | Mode::Search | Mode::Find | Mode::ThemePick => {}
-            Mode::List | Mode::Composing { .. } | Mode::BasePick | Mode::CommitPick => {
+            Mode::Composing { .. } | Mode::BasePick | Mode::CommitPick => {
                 self.scope = old.scope;
                 self.tab = old.tab;
                 self.active_file_tab = old.active_file_tab;
@@ -1244,7 +1260,6 @@ impl App {
                 self.diff_scroll = old.diff_scroll;
                 self.h_scroll = old.h_scroll;
                 self.select_anchor = old.select_anchor;
-                self.resume_list = old.resume_list;
                 self.toggled_dirs = std::mem::take(&mut old.toggled_dirs);
                 self.stash = std::mem::take(&mut old.stash);
                 self.wrap = old.wrap;
@@ -1318,7 +1333,7 @@ impl App {
     /// A directory's resting state in the active tab: `Changes` opens expanded, `All files`
     /// collapsed.
     fn default_expanded(&self) -> bool {
-        self.tab == Tab::Changes
+        self.active_file_tab == Tab::Changes
     }
 
     /// The `entries` index of the file row under the cursor, or `None` on a directory row.
@@ -1378,11 +1393,6 @@ impl App {
     /// "a comment is never lost to a refresh" invariant.
     pub fn reload(&mut self) -> Result<()> {
         self.ensure_config_ready()?;
-        // The PR tab holds its own state and renders nothing from the file tree, so a poll on
-        // it skips the rebuild; switching back to a file tab reloads it then.
-        if !self.tab.is_file_tab() {
-            return Ok(());
-        }
         // Outside a git repo, show an empty state rather than failing.
         if !git::is_repo(&self.repo) {
             self.entries.clear();
@@ -1408,14 +1418,16 @@ impl App {
     pub fn world_input(&self) -> crate::world::WorldInput {
         crate::world::WorldInput {
             repo: self.repo.clone(),
-            tab: self.tab,
+            // The file tab whose state the fields hold: the Comments tab builds nothing of its
+            // own, and the file tab beneath it keeps up while it shows.
+            tab: self.active_file_tab,
             scope: self.scope,
             base: self.base.clone(),
             base_epoch: self.base_epoch,
             commit_pick: self.commit_pick.clone(),
             // `Changes` never reads the toggled set, so it stays out of that tab's tag —
             // a directory toggle there must not invalidate an in-flight build.
-            toggled_dirs: if self.tab == Tab::AllFiles {
+            toggled_dirs: if self.active_file_tab == Tab::AllFiles {
                 self.toggled_dirs.clone()
             } else {
                 HashSet::new()
@@ -1424,24 +1436,18 @@ impl App {
         }
     }
 
-    /// Adopt a scan's comments. The list's highlight follows its comment by identity, then
-    /// clamps (Continuity).
+    /// Adopt a scan's comments.
     fn adopt_comments(&mut self, comments: Vec<Comment>) {
-        let highlighted = self.store.get(self.list_cursor).cloned();
-        self.store.replace_all(comments);
-        self.follow_list_cursor(highlighted.as_ref());
+        self.update_store(|store| store.replace_all(comments));
     }
 
-    /// Put the list's highlight back on `highlighted` after the store changed under it, else
-    /// clamp; an emptied list closes rather than strand the reviewer in `Comments (0)`.
-    fn follow_list_cursor(&mut self, highlighted: Option<&Comment>) {
-        if let Some(i) = highlighted.and_then(|c| self.store.position_of(c)) {
-            self.list_cursor = i;
-        }
-        self.clamp_list_cursor();
-        if self.store.is_empty() {
-            self.close_list();
-        }
+    /// Change the store, then put the Comments tab's selection and view back on the comments
+    /// they held: by identity, then place, clamped (Continuity).
+    fn update_store(&mut self, change: impl FnOnce(&mut CommentStore)) {
+        let selected = self.store.get(self.comments.cursor).cloned();
+        let top = self.store.get(self.comments.top).cloned();
+        change(&mut self.store);
+        self.comments.follow(&self.store, selected.as_ref(), top.as_ref());
     }
 
     /// Adopt a build's base outcome — the one rule for both writers (the landed snapshot
@@ -1583,10 +1589,9 @@ impl App {
     /// `previous_path`), the whole-file content in `All files`. The one place this dispatch lives,
     /// so opening a file from the tree and from a comment edit can't drift apart.
     fn open_path_in_tab(&mut self, path: String, previous_path: Option<String>) {
-        match self.tab {
+        match self.active_file_tab {
             Tab::AllFiles => self.set_file_view(&path),
-            // `Changes` (the `PR` tab never opens a file in the read pane).
-            Tab::Changes => self.set_diff(path, previous_path),
+            Tab::Changes | Tab::Comments => self.set_diff(path, previous_path),
         }
     }
 
@@ -1960,6 +1965,7 @@ impl App {
         self.painted_anchors.borrow_mut().clear();
         self.painted_details.borrow_mut().clear();
         self.painted_slots.borrow_mut().clear();
+        self.painted_cards.borrow_mut().clear();
     }
 
     /// Record the read pane's painted display-line layout — the walk the paint performed
@@ -1974,6 +1980,17 @@ impl App {
     #[must_use]
     pub(crate) fn painted_slots(&self) -> Vec<crate::ui::Slot> {
         self.painted_slots.borrow().clone()
+    }
+
+    /// Record the Comments tab's painted card lines, top to bottom, each with its card.
+    pub(crate) fn note_card_slots(&self, slots: Vec<(usize, crate::ui::CardLine)>) {
+        *self.painted_cards.borrow_mut() = slots;
+    }
+
+    /// The card lines of the frame on screen, for the Comments tab's hit test.
+    #[must_use]
+    pub(crate) fn painted_card_slots(&self) -> Vec<(usize, crate::ui::CardLine)> {
+        self.painted_cards.borrow().clone()
     }
 
     /// Note one painted link region, in absolute screen cells.
@@ -2309,7 +2326,7 @@ impl App {
     /// so a return to Changes never lands on a stale scroll or a pre-expanded fold.
     fn rebase_changes(&mut self) -> Result<()> {
         self.cache = DiffCache::new();
-        if self.tab == Tab::Changes {
+        if self.active_file_tab == Tab::Changes {
             self.file_cursor = 0;
             self.expanded_folds.clear();
             self.reset_diff_view();
@@ -2355,6 +2372,14 @@ impl App {
             return Ok(());
         }
         self.tab = tab;
+        // The Comments tab paints from the store, which is current already, and leaves the
+        // file tab's state where it is. The refresh behind catches up an agent's edits.
+        if tab == Tab::Comments {
+            self.comments.reveal = Some(Reveal::Visible);
+            self.comments.reveal_nav = true;
+            self.request_world_refresh(false);
+            return Ok(());
+        }
         // Entering a file tab: bring its state into the diff fields if the other file tab holds
         // them (a Changes↔AllFiles switch).
         if self.active_file_tab != tab {
@@ -3035,14 +3060,14 @@ impl App {
         self.reveal_diff = true; // scroll the anchored line into view before the box opens
         self.input.clear();
         self.caret = 0;
-        self.resume_list = false; // a fresh diff comment returns to the diff, not the list
         self.mode = Mode::Composing { editing: None };
     }
 
     /// Whether the read pane shows worktree lines, the only lines a comment can live on: not
     /// the preview, and not a `commits` diff, whose new side is a commit.
     fn shows_worktree_lines(&self) -> bool {
-        !(self.preview_active() || (self.tab == Tab::Changes && self.scope == Scope::Commits))
+        !(self.preview_active()
+            || (self.active_file_tab == Tab::Changes && self.scope == Scope::Commits))
     }
 
     /// The file and placement a comment on the current selection writes to, or the status line
@@ -3099,21 +3124,15 @@ impl App {
     /// A comment claims it only where its lines are on screen. With the navigator focused the
     /// diff cursor is off screen, so the file row under the eye wins. A live line selection is
     /// a gesture in progress on the diff, so nothing on the diff claims the key and the range
-    /// survives — the comments list, which owns the screen instead, still claims it
+    /// survives. On the Comments tab the selected card claims it: every comment is a worktree
+    /// file's, so any of them can be rewritten whatever the scope.
     fn comment_claims_edit(&self) -> bool {
-        let on_the_diff = self.tab.is_file_tab()
-            && self.focus == Focus::Diff
-            && !self.preview_active()
-            && self.select_anchor.is_none();
-        let claimed =
-            if self.mode == Mode::List { self.list_comment_editable() } else { on_the_diff };
+        let claimed = self.tab == Tab::Comments
+            || (self.tab.is_file_tab()
+                && self.focus == Focus::Diff
+                && !self.preview_active()
+                && self.select_anchor.is_none());
         claimed && self.target_comment().is_some()
-    }
-
-    /// Whether the list has a highlighted comment to edit. Every comment is a worktree file's,
-    /// so any of them can be rewritten whatever the scope.
-    fn list_comment_editable(&self) -> bool {
-        self.mode == Mode::List && self.store.get(self.list_cursor).is_some()
     }
 
     /// Whether `edit` opens a file here. The branch [`Self::start_edit`] takes, asked by the
@@ -3172,15 +3191,27 @@ impl App {
     }
 
     fn edit_comment_at(&mut self, i: usize) {
-        // Editing from the comments-list overlay returns there on finish (else to the diff).
-        let from_list = self.mode == Mode::List;
         let Some(c) = self.store.get(i).cloned() else { return };
-        self.preview = false;
+        if self.tab == Tab::Comments {
+            // The card opens its own box; the file tab beneath is left as it was. A reveal
+            // the opening click already asked for stands.
+            self.comments.cursor = i;
+            self.comments.reveal.get_or_insert(Reveal::Visible);
+            self.comments.reveal_nav = true;
+        } else {
+            self.land_on_comment(&c);
+        }
+        self.caret = c.text.chars().count(); // edit opens with the caret at the end
+        self.input.clone_from(&c.text);
+        self.mode = Mode::Composing { editing: Some(c) };
+    }
 
-        // Bring the comment's file into the diff and land the cursor on its line, so the
-        // inline edit box opens over the comment — even when editing from the list, and even
-        // when the file's row is hidden inside a collapsed directory (load it by path, not by
-        // tree row). Move the list cursor onto its row when one exists.
+    /// Bring comment `c`'s file into the read pane and land the cursor on its last tag line,
+    /// so the inline edit box opens right under the comment.
+    fn land_on_comment(&mut self, c: &Comment) {
+        self.preview = false;
+        // Load the file by path, not by tree row, so a file hidden inside a collapsed
+        // directory still opens. Move the tree cursor onto its row when one exists.
         if self.diff_path.as_deref() != Some(c.file.as_str())
             && let Some(e) = self.entries.iter().find(|e| e.path == c.file).cloned()
         {
@@ -3193,21 +3224,16 @@ impl App {
         }
         // Only move the cursor when the pane shows the comment's own worktree lines, so a
         // comment in a file the changeset doesn't list, or under a `commits` diff, never lands
-        // the cursor on a same-numbered line of something else. Land on its last tag line, so
-        // the edit box opens right under the comment.
+        // the cursor on a same-numbered line of something else.
         if self.shows_worktree_lines()
             && self.diff_path.as_deref() == Some(c.file.as_str())
-            && let Some(idx) = self.visible.iter().rposition(|row| covers(&c, row))
+            && let Some(idx) = self.visible.iter().rposition(|row| covers(c, row))
         {
             self.diff_cursor = idx;
             self.select_anchor = None;
         }
         self.focus = Focus::Diff;
         self.reveal_diff = true; // scroll the edited line into view before the box opens
-        self.caret = c.text.chars().count(); // edit opens with the caret at the end
-        self.input.clone_from(&c.text);
-        self.resume_list = from_list;
-        self.mode = Mode::Composing { editing: Some(c) };
     }
 
     // --- text editing: a character caret into the active field ----------------------------
@@ -3223,7 +3249,7 @@ impl App {
             Mode::Search => self.search.as_mut().map(|s| (&mut s.query, &mut s.caret)),
             Mode::Find => self.find.as_mut().map(|f| (&mut f.query, &mut f.caret)),
             Mode::BasePick => self.base_picker.as_mut().map(|b| (&mut b.query, &mut b.caret)),
-            Mode::Normal | Mode::List | Mode::CommitPick | Mode::ThemePick => None,
+            Mode::Normal | Mode::CommitPick | Mode::ThemePick => None,
         }
     }
 
@@ -3440,18 +3466,11 @@ impl App {
         self.leave_compose();
     }
 
-    /// Leave compose mode, returning to the comments-list overlay if the compose was opened
-    /// from it (and any comments remain), else to Normal.
+    /// Leave compose mode for the view it opened over: the diff, or the Comments tab's card.
     fn leave_compose(&mut self) {
         self.input.clear();
         self.caret = 0;
-        let resume = std::mem::take(&mut self.resume_list);
-        if resume && !self.store.is_empty() {
-            self.list_cursor = self.list_cursor.min(self.store.len() - 1);
-            self.mode = Mode::List;
-        } else {
-            self.mode = Mode::Normal;
-        }
+        self.mode = Mode::Normal;
     }
 
     /// Save the in-progress comment — rewriting the existing one or writing a new one above
@@ -3501,9 +3520,8 @@ impl App {
         if git::is_ignored(&self.repo, file) {
             self.ignored_comment_files.insert(file.to_string());
         }
-        let highlighted = self.store.get(self.list_cursor).cloned();
-        self.store.replace_file(file, review::reparse(&self.repo, file));
-        self.follow_list_cursor(highlighted.as_ref());
+        let fresh = review::reparse(&self.repo, file);
+        self.update_store(|store| store.replace_file(file, fresh));
         self.reopen_view();
         self.request_world_refresh(false);
     }
@@ -3542,7 +3560,6 @@ impl App {
             Mode::Composing { editing: Some(c) } => Some(c.start),
             Mode::Composing { editing: None } => Some(self.placement().ok()?.1.before),
             Mode::Normal
-            | Mode::List
             | Mode::BasePick
             | Mode::CommitPick
             | Mode::Search
@@ -3579,11 +3596,11 @@ impl App {
         self.edit_comment_at(i);
     }
 
-    /// The store index to act on: the comment under the diff cursor, or — in the
-    /// list overlay — the highlighted row.
+    /// The store index to act on: the comment under the diff cursor, or — on the Comments
+    /// tab — the selected card.
     fn target_comment(&self) -> Option<usize> {
-        if self.mode == Mode::List {
-            return (self.list_cursor < self.store.len()).then_some(self.list_cursor);
+        if self.tab == Tab::Comments {
+            return (self.comments.cursor < self.store.len()).then_some(self.comments.cursor);
         }
         self.comment_under_cursor()
     }
@@ -3600,8 +3617,8 @@ impl App {
 
     /// Remove the targeted comment's lines from its file.
     pub fn delete_comment(&mut self) {
-        // The preview paints no tag lines: `d` only acts through the comments-list overlay.
-        if self.preview_active() && self.mode != Mode::List {
+        // The preview paints no tag lines: there `d` only acts through the Comments tab.
+        if self.preview_active() && self.tab != Tab::Comments {
             return;
         }
         let Some(c) = self.target_comment().and_then(|i| self.store.get(i)).cloned() else {
@@ -3947,55 +3964,166 @@ impl App {
             return Ok(());
         }
         self.close_search();
-        // Opening is a deliberate leave: the origin tab stashes its place on the switch,
-        // kept for `1`/`2`/`3`.
+        // The pick feeds the engine's frecency store, so ranking improves with use.
+        self.search_track = Some(path.clone());
+        self.open_in_files(&path)?;
+        if let Some(line) = line {
+            let last = self.visible.len().saturating_sub(1);
+            self.diff_cursor = (line.saturating_sub(1) as usize).min(last);
+        }
+        Ok(())
+    }
+
+    /// Open `path` in `All files`, source view, its row revealed under expanded folders and
+    /// the read pane focused at the file's start. Opening is a deliberate leave: the origin
+    /// tab keeps its place on the switch, for `1`/`2`/`3`.
+    fn open_in_files(&mut self, path: &str) -> Result<()> {
         if self.tab != Tab::AllFiles {
             self.set_tab(Tab::AllFiles)?;
         }
-        // The pick feeds the engine's frecency store, so ranking improves with use.
-        self.search_track = Some(path.clone());
         let mut expanded = false;
-        let mut dir = path.as_str();
+        let mut dir = path;
         while let Some((parent, _)) = dir.rsplit_once('/') {
             expanded |= self.set_dir_expanded(parent, true);
             dir = parent;
         }
         if expanded {
-            // Re-flatten the rows only: the picked file is already in `entries` (search
-            // never returns an ignored path), so the worktree walk `apply_dir_change`
-            // runs for lazy ignored children would block the pick for nothing
-            // (policies/ux-responsiveness.md).
-            self.rebuild_file_rows();
+            // A file already in `entries` needs the rows re-flattened only: the worktree walk
+            // `apply_dir_change` runs for lazy ignored children would block the open for
+            // nothing (policies/ux-responsiveness.md). An ignored file needs the walk.
+            if self.entries.iter().any(|e| e.path == path) {
+                self.rebuild_file_rows();
+            } else {
+                self.apply_dir_change();
+            }
         }
         self.reset_diff_view();
-        // A same-file pick must land on the hit line in source, not behind an open
-        // markdown preview (`set_file_view` keeps the choice for a same-path open).
+        // The open must land in source, not behind an open markdown preview (`set_file_view`
+        // keeps the choice for a same-path open).
         self.preview = false;
-        self.set_file_view(&path);
-        if let Some(fi) = self.file_row_of_path(&path) {
+        self.set_file_view(path);
+        if let Some(fi) = self.file_row_of_path(path) {
             self.file_cursor = fi;
             self.reveal_files = true;
         }
         self.focus = Focus::Diff;
-        if let Some(line) = line {
-            let last = self.visible.len().saturating_sub(1);
-            self.diff_cursor = (line.saturating_sub(1) as usize).min(last);
-        }
         self.reveal_diff = true;
         Ok(())
     }
 
-    pub fn open_list(&mut self) {
-        if !self.store.is_empty() {
-            self.list_cursor = 0;
-            self.mode = Mode::List;
+    /// Open the selected comment in `All files` with the cursor on its last tag line
+    /// (§5.3). That tab reads the whole worktree file, so every comment has a place there
+    /// whatever the scope.
+    pub fn open_comment_in_files(&mut self) -> Result<()> {
+        let Some(c) = self.store.get(self.comments.cursor).cloned() else { return Ok(()) };
+        self.open_in_files(&c.file)?;
+        if let Some(idx) = self.visible.iter().rposition(|row| covers(&c, row)) {
+            self.diff_cursor = idx;
+        }
+        Ok(())
+    }
+
+    // ---- Comments tab ---------------------------------
+
+    /// The Comments tab's navigator rows, over the current store.
+    #[must_use]
+    pub fn comment_nav_rows(&self) -> Vec<NavRow> {
+        crate::comments_tab::nav_rows(&self.store)
+    }
+
+    /// Card `i`'s highlighted context rows, from the cache when the comment's context is
+    /// unchanged.
+    #[must_use]
+    pub fn card_code(&self, i: usize) -> crate::comments_tab::CardCode {
+        let Some(c) = self.store.get(i) else { return crate::comments_tab::CardCode::default() };
+        self.card_rows.borrow_mut().get(c, &self.highlighter)
+    }
+
+    /// The card the comment box is open in, while editing on the Comments tab: the edited
+    /// comment's card, else the selected one, so a draft never drops off screen when a rescan
+    /// moved its comment.
+    #[must_use]
+    pub fn edited_card(&self) -> Option<usize> {
+        let Mode::Composing { editing: Some(c) } = &self.mode else { return None };
+        if self.tab != Tab::Comments {
+            return None;
+        }
+        Some(self.store.position_of(c).unwrap_or(self.comments.cursor))
+    }
+
+    /// Select store index `i` on the Comments tab.
+    pub fn select_comment(&mut self, i: usize, reveal: Reveal) {
+        if i < self.store.len() {
+            self.comments.select(i, reveal);
         }
     }
 
-    pub fn close_list(&mut self) {
-        if self.mode == Mode::List {
-            self.mode = Mode::Normal;
+    /// Select card `i` on the Comments tab and open its box: a selected comment is one being
+    /// edited. The box being left saves first; a refused save keeps it open, so nothing typed
+    /// is lost.
+    pub fn open_card(&mut self, i: usize, reveal: Reveal) {
+        if i >= self.store.len() || !self.close_card_box() {
+            return;
         }
+        self.comments.select(i, reveal);
+        self.edit_comment_at(i);
+    }
+
+    /// Close the Comments tab's open box for a move elsewhere, saving a changed draft; `esc`
+    /// is the way to leave without saving. A blank or unchanged draft writes nothing. Returns
+    /// whether the box is closed (always, when none was open).
+    pub fn close_card_box(&mut self) -> bool {
+        let Mode::Composing { editing: Some(c) } = &self.mode else { return true };
+        if self.tab != Tab::Comments {
+            return true;
+        }
+        let text = self.input.trim();
+        if text.is_empty() || text == c.text {
+            self.leave_compose();
+            return true;
+        }
+        self.submit_comment();
+        !self.composing()
+    }
+
+    /// Step the Comments tab's selection `delta` cards and open the one it lands on. With a box
+    /// open at the first or last card there is nowhere to go, so it stays open.
+    pub fn step_comment(&mut self, delta: isize) {
+        let Some(last) = self.store.len().checked_sub(1) else { return };
+        let to = self.comments.cursor.saturating_add_signed(delta).min(last);
+        if to == self.comments.cursor && self.composing() {
+            return;
+        }
+        self.open_card(to, Reveal::Visible);
+    }
+
+    /// Open the first comment of the next (`forward`) or previous file.
+    pub fn step_comment_file(&mut self, forward: bool) {
+        if let Some(i) = crate::comments_tab::file_step(&self.store, self.comments.cursor, forward)
+        {
+            self.open_card(i, Reveal::Top);
+        }
+    }
+
+    /// Settle the Comments tab's scroll for this frame's geometry: `heights` per card and the
+    /// two panes' viewports. An open comment box keeps its card revealed as it grows.
+    pub fn settle_comments(
+        &mut self,
+        heights: &[crate::comments_tab::CardHeight],
+        viewport: usize,
+        nav_viewport: usize,
+    ) {
+        if self.edited_card().is_some() {
+            self.comments.reveal.get_or_insert(Reveal::Visible);
+        }
+        self.comments.settle(heights, viewport);
+        let rows = self.comment_nav_rows();
+        self.comments.settle_nav(&rows, nav_viewport);
+    }
+
+    /// Scroll the Comments navigator `delta` rows; the frame bounds it.
+    pub fn wheel_comment_nav(&mut self, delta: isize) {
+        self.comments.nav_scroll = self.comments.nav_scroll.saturating_add_signed(delta);
     }
 
     /// The footer's actions for the current context, tagged with their [`Band`] — row 1 (primary,
@@ -4011,17 +4139,18 @@ impl App {
         // and no bands. The escape action comes right after the primary so the exit hint survives a
         // narrow-width trim (trailing `Do` actions drop first).
         match self.mode {
+            // A card's box on the Comments tab: `esc` reverts, and the arrows run on past the
+            // box to the next card, saving this one.
+            Mode::Composing { .. } if self.edited_card().is_some() => {
+                return vec![
+                    (A::Save, Primary),
+                    (A::Revert, Do),
+                    (A::StepCard, Do),
+                    (A::Newline, Do),
+                ];
+            }
             Mode::Composing { .. } => {
                 return vec![(A::Save, Primary), (A::Cancel, Do), (A::Newline, Do)];
-            }
-            Mode::List => {
-                let mut out = vec![(A::Copy, Primary), (A::CloseList, Do)];
-                // A comment from another diff cannot be edited here.
-                if self.list_comment_editable() {
-                    out.push((A::EditComment, Do));
-                }
-                out.push((A::DeleteComment, Do));
-                return out;
             }
             Mode::BasePick => {
                 return vec![(A::PickBaseRow, Primary), (A::ClosePicker, Do), (A::MoveBaseRow, Do)];
@@ -4081,6 +4210,9 @@ impl App {
                 ];
             }
             Mode::Normal => {}
+        }
+        if self.tab == Tab::Comments {
+            return self.comments_footer();
         }
 
         let mut out: Vec<(FooterAction, Band)> = Vec::new();
@@ -4211,7 +4343,6 @@ impl App {
         out.push((A::Wrap, Go));
         out.push((A::Theme, Go));
         if !self.store.is_empty() {
-            out.push((A::List, Go));
             out.push((A::Copy, Go));
         }
         if !out.iter().any(|&(a, _)| a == A::Refresh) {
@@ -4248,10 +4379,36 @@ impl App {
         out
     }
 
-    pub fn list_move(&mut self, delta: isize) {
-        if self.mode == Mode::List && !self.store.is_empty() {
-            self.list_cursor = step(self.list_cursor, delta, self.store.len());
+    /// The Comments tab's bar: the selected card's actions on row 1, then the keys that work
+    /// anywhere. The file tabs' cursor, scope, and pane actions act on no card, so none shows.
+    fn comments_footer(&self) -> Vec<(FooterAction, Band)> {
+        use Band::{Do, Go, Move, Primary, Send};
+        use FooterAction as A;
+        let any = !self.store.is_empty();
+        let mut out = if any {
+            vec![
+                (A::OpenInFiles, Primary),
+                (A::EditComment, Do),
+                (A::DeleteComment, Do),
+                (A::Copy, Send),
+            ]
+        } else {
+            vec![(A::Refresh, Primary)]
+        };
+        out.extend([(A::Search, Go), (A::Wrap, Go), (A::Theme, Go)]);
+        if any {
+            out.push((A::Refresh, Go));
         }
+        out.push((A::Tabs, Go));
+        if !self.navigator_hidden_here() {
+            out.push((A::NavigatorPosition, Go));
+        }
+        out.push((A::NavigatorHide, Go));
+        out.push((A::Quit, Go));
+        if any {
+            out.extend([(A::MoveLine, Move), (A::MoveFile, Move), (A::MovePage, Move)]);
+        }
+        out
     }
 }
 
@@ -4590,12 +4747,6 @@ impl App {
             (added.saturating_add(a.additions), removed.saturating_add(a.deletions))
         })
     }
-
-    fn clamp_list_cursor(&mut self) {
-        if self.list_cursor >= self.store.len() {
-            self.list_cursor = self.store.len().saturating_sub(1);
-        }
-    }
 }
 
 /// Step `cur` by `delta` within `0..n`, clamping at both ends.
@@ -4730,7 +4881,7 @@ fn covers(c: &Comment, row: &Row) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, Mode};
+    use super::{App, Mode, Tab};
     use crate::config::NavigatorPosition;
     use crate::model::{Comment, CommitPick, Scope};
     use crate::world::{PickStatus, PickVerdict};
@@ -4745,13 +4896,15 @@ mod tests {
             text: text.into(),
             deleted: None,
             anchor: None,
+            before: Vec::new(),
+            after: Vec::new(),
         }
     }
 
     #[test]
     fn config_recovery_carries_an_open_preview() {
         let mut old = App::blocked(PathBuf::from("."), Scope::Uncommitted, None);
-        old.mode = Mode::List;
+        old.mode = Mode::BasePick;
         old.preview = true;
         old.preview_scroll = 7;
         old.preview_text = "# doc".to_string();
@@ -4833,7 +4986,6 @@ mod tests {
         let mut old = App::blocked(PathBuf::from("."), Scope::Uncommitted, None);
         old.store.replace_all(vec![comment_at("src/lib.rs", 1, "saved")]);
         old.mode = Mode::Composing { editing: None };
-        old.resume_list = true;
         old.input = "draft".to_string();
         old.caret = 3;
 
@@ -4843,30 +4995,25 @@ mod tests {
         assert_eq!(recovered.store.len(), 1);
         assert_eq!(recovered.input, "draft");
         assert_eq!(recovered.caret, 3);
-        assert!(recovered.resume_list);
         assert!(matches!(recovered.mode, Mode::Composing { editing: None }));
     }
 
     #[test]
-    fn config_recovery_keeps_the_comment_list_view_and_navigation() {
+    fn config_recovery_keeps_the_comments_tab_and_its_place() {
         let mut old = App::blocked(PathBuf::from("."), Scope::Branch, None);
-        old.mode = Mode::List;
-        old.file_cursor = 4;
-        old.file_scroll = 2;
-        old.diff_cursor = 8;
-        old.diff_scroll = 5;
-        old.input = "unsent".to_string();
+        old.tab = Tab::Comments;
+        old.comments.cursor = 1;
+        old.comments.top = 1;
+        old.comments.top_offset = 3;
 
         let mut recovered = App::new(PathBuf::from("."), Scope::Uncommitted, None);
         recovered.carry_authored_state_from(&mut old);
 
-        assert!(matches!(recovered.mode, Mode::List));
-        assert_eq!(recovered.scope, Scope::Branch);
-        assert_eq!(recovered.file_cursor, 4);
-        assert_eq!(recovered.file_scroll, 2);
-        assert_eq!(recovered.diff_cursor, 8);
-        assert_eq!(recovered.diff_scroll, 5);
-        assert_eq!(recovered.input, "unsent");
+        assert_eq!(recovered.tab, Tab::Comments);
+        assert_eq!(
+            (recovered.comments.cursor, recovered.comments.top, recovered.comments.top_offset),
+            (1, 1, 3)
+        );
     }
 
     #[test]
@@ -5016,11 +5163,11 @@ mod tests {
         assert!(app.editor_request.is_none());
         assert!(app.select_anchor.is_some(), "and the range survives the press");
 
-        // The freeze is the diff's. The comments list owns its own screen, so the key still
-        // opens the highlighted comment there.
-        app.open_list();
+        // The freeze is the diff's. The Comments tab owns its own screen, so the key still
+        // opens the selected card's comment there.
+        app.tab = Tab::Comments;
         app.start_edit();
-        assert!(app.composing(), "the list edits its comment under a live range");
+        assert!(app.composing(), "the card edits its comment under the diff's live range");
     }
 
     #[test]

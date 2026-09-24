@@ -112,8 +112,8 @@ pub fn build(input: &WorldInput) -> Result<WorldSnapshot> {
     let entries = match input.tab {
         // The whole worktree (ignored included), with expanded ignored dirs loaded lazily.
         Tab::AllFiles => all_files_entries(input, &changed_map)?,
-        // `Changes`.
-        Tab::Changes => changed.iter().map(Entry::from_changed).collect(),
+        // `Changes`. The Comments tab builds as the file tab beneath it (`App::world_input`).
+        Tab::Changes | Tab::Comments => changed.iter().map(Entry::from_changed).collect(),
     };
     Ok(WorldSnapshot { changed: changed_map, entries, branch_base, pick_status, head, comments })
 }

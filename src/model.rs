@@ -117,6 +117,11 @@ pub struct Comment {
     /// The line the comment annotates, the first below its tag lines, verbatim; `None` when
     /// the comment ends the file.
     pub anchor: Option<String>,
+    /// Up to [`crate::review::CONTEXT_LINES`] lines above the tag lines, and below them,
+    /// verbatim: the Comments tab's context window (§5.3), read by the scan that found the
+    /// comment. Not identity: an edit nearby changes it without making another comment.
+    pub before: Vec<String>,
+    pub after: Vec<String>,
 }
 
 impl Comment {
@@ -211,6 +216,8 @@ mod tests {
             text: text.into(),
             deleted: None,
             anchor: Some("x".into()),
+            before: Vec::new(),
+            after: Vec::new(),
         }
     }
 

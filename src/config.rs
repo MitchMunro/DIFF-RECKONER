@@ -914,7 +914,7 @@ mod tests {
             .unwrap();
         let error = super::plugin_config_in(dir.path()).unwrap_err().to_string();
         assert!(
-            error.contains("`expand`") && error.contains("`comments`") && error.contains('3'),
+            error.contains("`expand`") && error.contains("`tab-comments`") && error.contains('3'),
             "{error}"
         );
     }

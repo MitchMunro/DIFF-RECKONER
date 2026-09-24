@@ -45,10 +45,14 @@ design (`policies/ux-responsiveness.md`). Two things run on worker threads: the 
 `land_world_completion`: input-tagged, latest-wins, reconciled only while the view still
 matches.
 
-- `src/app.rs` — the `App` state machine. Tabs (`Changes`/`AllFiles`), scopes
-  (`Uncommitted`/`Branch`/`Commits`), `Focus` (files vs diff pane), `Mode` (`Normal`, the
-  `Composing`/`List` overlays, the pickers, and the body-replacing `Search` screen).
-  `reconcile_world()` is the one place a world snapshot touches place state.
+- `src/app.rs` — the `App` state machine. Tabs (`Changes`/`AllFiles`/`Comments`), scopes
+  (`Uncommitted`/`Branch`/`Commits`), `Focus` (files vs diff pane), `Mode` (`Normal`,
+  `Composing`, the pickers, and the body-replacing `Search` screen).
+  `reconcile_world()` is the one place a world snapshot touches place state. The diff and
+  navigator fields always hold a file tab (`active_file_tab`); the `Comments` tab paints
+  from the store and leaves them live beneath it.
+- `src/comments_tab.rs` — the `Comments` tab's place state (selected card, card-anchored
+  scroll, navigator rows) and its reconcile-by-identity; `ui.rs` paints the cards.
 - `src/world.rs` — the world worker: the pure snapshot build (`WorldInput` → `WorldSnapshot`)
   and the request/completion channels (latest-wins by generation).
 - `src/git.rs` — every git subprocess.

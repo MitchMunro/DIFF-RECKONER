@@ -147,6 +147,8 @@ mod tests {
             text: text.into(),
             deleted: None,
             anchor: anchor.map(Into::into),
+            before: Vec::new(),
+            after: Vec::new(),
         }
     }
 
