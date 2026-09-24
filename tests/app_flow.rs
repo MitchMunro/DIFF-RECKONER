@@ -3317,37 +3317,37 @@ fn three_card_app() -> (Repo, App) {
 }
 
 #[test]
-fn selecting_a_card_opens_it_and_the_arrows_run_on_through_the_stack() {
+fn the_arrows_select_cards_and_only_edit_opens_one() {
     use diff_reckoner::app::Tab;
-    let (r, mut app) = three_card_app();
+    let (_r, mut app) = three_card_app();
     let keymap = Keymap::default();
     let (open, cursor, focus) = (app.diff_path.clone(), app.diff_cursor, app.focus);
-    let before = (r.read("a.rs"), r.read("b.rs"));
 
     press(&mut app, &keymap, KeyCode::Char('3'));
     assert_eq!(app.tab, Tab::Comments);
-    assert!(!app.composing(), "entering the tab selects nothing new, so opens nothing");
+    assert!(!app.composing(), "entering the tab opens nothing");
     press(&mut app, &keymap, KeyCode::Char('j'));
-    assert_eq!((app.comments.cursor, app.edited_card()), (1, Some(1)), "`j` opens the next card");
-    // One-line boxes: every `↓`/`↑` runs off the box's edge onto the next card.
+    assert_eq!((app.comments.cursor, app.edited_card()), (1, None), "`j` selects the next card");
     press(&mut app, &keymap, KeyCode::Down);
-    assert_eq!(app.edited_card(), Some(2), "`↓` past the last row opens the card below");
     press(&mut app, &keymap, KeyCode::Down);
-    assert_eq!(app.edited_card(), Some(2), "the last card has nowhere further to go");
+    assert_eq!(app.comments.cursor, 2, "the last card has nowhere further to go");
     press(&mut app, &keymap, KeyCode::Up);
     press(&mut app, &keymap, KeyCode::Up);
-    assert_eq!(app.edited_card(), Some(0));
-    assert_eq!((r.read("a.rs"), r.read("b.rs")), before, "unchanged boxes write nothing");
+    assert_eq!((app.comments.cursor, app.edited_card()), (0, None));
 
-    // `esc` leaves the box, and the tab's keys work again: `f`/`F` open across files.
+    // `e` opens the selected card; `↓` in a one-line box stays in it.
+    press(&mut app, &keymap, KeyCode::Char('e'));
+    assert_eq!(app.edited_card(), Some(0));
+    press(&mut app, &keymap, KeyCode::Down);
+    assert_eq!(app.edited_card(), Some(0), "the arrows walk the box, not the stack");
     press(&mut app, &keymap, KeyCode::Esc);
     assert!(!app.composing());
+
+    // `f`/`F` select across files.
     press(&mut app, &keymap, KeyCode::Char('f'));
-    assert_eq!(app.edited_card(), Some(2), "`f` opens the next file's first comment");
-    press(&mut app, &keymap, KeyCode::Esc);
+    assert_eq!((app.comments.cursor, app.edited_card()), (2, None));
     press(&mut app, &keymap, KeyCode::Char('F'));
-    assert_eq!(app.edited_card(), Some(0), "`F` the previous file's first");
-    press(&mut app, &keymap, KeyCode::Esc);
+    assert_eq!(app.comments.cursor, 0, "`F` the previous file's first");
 
     // The file tabs' keys have nothing to act on here and leave the diff beneath alone.
     for key in [KeyCode::Char('c'), KeyCode::Char('v'), KeyCode::Tab, KeyCode::Char(']')] {
@@ -3361,24 +3361,59 @@ fn selecting_a_card_opens_it_and_the_arrows_run_on_through_the_stack() {
 }
 
 #[test]
-fn moving_off_a_card_saves_it_and_esc_reverts_it() {
+fn a_card_saves_on_enter_and_esc_reverts_it() {
     use diff_reckoner::app::Tab;
     let (r, mut app) = three_card_app();
     let keymap = Keymap::default();
     enter_tab(&mut app, Tab::Comments);
     press(&mut app, &keymap, KeyCode::Char('j'));
+    press(&mut app, &keymap, KeyCode::Char('e'));
     typed(&mut app, " edited");
-    press(&mut app, &keymap, KeyCode::Down);
-    assert_eq!(app.edited_card(), Some(2));
-    assert!(r.read("a.rs").contains(&tag_line("second edited")), "the move saved it");
-    assert_eq!(app.status, "comment updated");
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert!(!app.composing());
+    assert!(r.read("a.rs").contains(&tag_line("second edited")), "`enter` saved it");
+    assert_eq!((app.status.as_str(), app.comments.cursor), ("comment updated", 1));
 
+    press(&mut app, &keymap, KeyCode::Char('j'));
+    press(&mut app, &keymap, KeyCode::Char('e'));
     typed(&mut app, " dropped");
     let b = r.read("b.rs");
     press(&mut app, &keymap, KeyCode::Esc);
     assert!(!app.composing());
     assert_eq!(r.read("b.rs"), b, "`esc` writes nothing");
     assert_eq!(app.store.get(2).unwrap().text, "third", "and the comment reads as before");
+}
+
+#[test]
+fn delete_asks_first_with_delete_highlighted() {
+    use diff_reckoner::app::Tab;
+    let (r, mut app) = three_card_app();
+    let keymap = Keymap::default();
+    enter_tab(&mut app, Tab::Comments);
+    let a = r.read("a.rs");
+
+    press(&mut app, &keymap, KeyCode::Char('d'));
+    assert!(matches!(app.mode, Mode::ConfirmDelete { delete: true, .. }));
+    assert_eq!(r.read("a.rs"), a, "nothing is deleted until the popup is answered");
+    press(&mut app, &keymap, KeyCode::Esc);
+    assert_eq!((app.mode.clone(), app.store.len()), (Mode::Normal, 3), "`esc` cancels");
+
+    // `←` moves to `Cancel`, and `enter` takes it.
+    press(&mut app, &keymap, KeyCode::Char('d'));
+    press(&mut app, &keymap, KeyCode::Left);
+    assert!(matches!(app.mode, Mode::ConfirmDelete { delete: false, .. }));
+    press(&mut app, &keymap, KeyCode::Char('q'));
+    assert!(!app.should_quit, "the popup holds every other key");
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!((app.mode.clone(), app.store.len()), (Mode::Normal, 3));
+
+    // `→` back to `Delete`, and `enter` deletes.
+    press(&mut app, &keymap, KeyCode::Char('d'));
+    press(&mut app, &keymap, KeyCode::Left);
+    press(&mut app, &keymap, KeyCode::Right);
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!((app.mode.clone(), app.store.len()), (Mode::Normal, 2));
+    assert!(!r.read("a.rs").contains(&tag_line("first")));
 }
 
 #[test]
@@ -3395,13 +3430,14 @@ fn the_comments_tab_acts_through_the_rebindable_keys() {
 
     app.set_tab(Tab::Comments).unwrap();
     press(&mut app, &keymap, KeyCode::Char('d'));
-    assert_eq!(app.store.len(), 1, "the replaced default is inert");
+    assert_eq!(app.mode, Mode::Normal, "the replaced default is inert");
     press(&mut app, &keymap, KeyCode::Enter);
     assert_eq!(app.tab, Tab::Comments, "a rebound `open-comment` frees `enter`");
     press(&mut app, &keymap, KeyCode::Char('o'));
     assert_eq!(app.tab, Tab::AllFiles, "the rebound key opens the comment");
     press(&mut app, &keymap, KeyCode::Char('3'));
     press(&mut app, &keymap, KeyCode::Char('x'));
+    press(&mut app, &keymap, KeyCode::Enter);
     assert!(app.store.is_empty(), "the rebound `delete` acts on the selected card");
 }
 
@@ -6080,7 +6116,7 @@ fn a_tag_counts_inside_a_comment_or_starting_a_line_of_a_file_without_comments()
     );
 
     // It is a comment like any other: it edits in its card and deletes back to the file.
-    press(&mut app, &keymap, KeyCode::Char('j'));
+    press(&mut app, &keymap, KeyCode::Char('e'));
     assert_eq!(app.edited_card(), Some(0));
     typed(&mut app, " yes");
     press(&mut app, &keymap, KeyCode::Enter);

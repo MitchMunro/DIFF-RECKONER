@@ -394,6 +394,12 @@ pub enum Mode {
     /// Choosing the dark and light themes. Its state lives in [`App::theme_picker`]. Not
     /// modal: the page behind it must rebuild under each preview.
     ThemePick,
+    /// Asking before `comment` is deleted, as the store held it when `delete` was pressed.
+    /// `delete` is whether the `Delete` button holds the highlight rather than `Cancel`.
+    ConfirmDelete {
+        comment: Comment,
+        delete: bool,
+    },
 }
 
 impl Mode {
@@ -404,7 +410,10 @@ impl Mode {
     /// `Search` replaces the body rather than holding a place in it, and `Find` is a band the
     /// reviewer navigates the live diff with. Neither freezes anything, so neither is modal here.
     pub fn is_modal(&self) -> bool {
-        matches!(self, Mode::Composing { .. } | Mode::BasePick | Mode::CommitPick)
+        matches!(
+            self,
+            Mode::Composing { .. } | Mode::BasePick | Mode::CommitPick | Mode::ConfirmDelete { .. }
+        )
     }
 }
 
@@ -613,8 +622,9 @@ pub enum FooterAction {
     Cancel,
     /// Leave a Comments-tab card's box without saving.
     Revert,
-    /// Save a Comments-tab card's box and open the card above or below.
-    StepCard,
+    /// The delete popup's own bar: take the highlighted button, and move between the two.
+    PickButton,
+    MoveButton,
     ClosePicker,
     /// Open the base picker.
     BasePick,
@@ -1235,7 +1245,11 @@ impl App {
             // `set_config_error` closes the search overlay, the find band, the theme picker, and
             // the agent picker before the mode is stored, so none reaches recovery; the search
             // query is not restored and the picker's frozen rows are not either.
-            Mode::Normal | Mode::Search | Mode::Find | Mode::ThemePick => {}
+            Mode::Normal
+            | Mode::Search
+            | Mode::Find
+            | Mode::ThemePick
+            | Mode::ConfirmDelete { .. } => {}
             Mode::Composing { .. } | Mode::BasePick | Mode::CommitPick => {
                 self.scope = old.scope;
                 self.tab = old.tab;
@@ -3249,7 +3263,7 @@ impl App {
             Mode::Search => self.search.as_mut().map(|s| (&mut s.query, &mut s.caret)),
             Mode::Find => self.find.as_mut().map(|f| (&mut f.query, &mut f.caret)),
             Mode::BasePick => self.base_picker.as_mut().map(|b| (&mut b.query, &mut b.caret)),
-            Mode::Normal | Mode::CommitPick | Mode::ThemePick => None,
+            Mode::Normal | Mode::CommitPick | Mode::ThemePick | Mode::ConfirmDelete { .. } => None,
         }
     }
 
@@ -3564,7 +3578,8 @@ impl App {
             | Mode::CommitPick
             | Mode::Search
             | Mode::Find
-            | Mode::ThemePick => None,
+            | Mode::ThemePick
+            | Mode::ConfirmDelete { .. } => None,
         }
     }
 
@@ -3615,17 +3630,63 @@ impl App {
         self.store.iter().position(|c| c.file == file && covers(c, row))
     }
 
-    /// Remove the targeted comment's lines from its file.
-    pub fn delete_comment(&mut self) {
+    /// The comment `delete` acts on here, if any.
+    fn deletable_comment(&self) -> Option<Comment> {
         // The preview paints no tag lines: there `d` only acts through the Comments tab.
         if self.preview_active() && self.tab != Tab::Comments {
+            return None;
+        }
+        self.target_comment().and_then(|i| self.store.get(i)).cloned()
+    }
+
+    /// `delete`: ask before removing the targeted comment, the `Delete` button highlighted.
+    pub fn ask_delete_comment(&mut self) {
+        if self.mode != Mode::Normal {
             return;
         }
-        let Some(c) = self.target_comment().and_then(|i| self.store.get(i)).cloned() else {
+        if let Some(comment) = self.deletable_comment() {
+            self.mode = Mode::ConfirmDelete { comment, delete: true };
+        }
+    }
+
+    /// Move the delete popup's highlight to the `Delete` button (`true`) or `Cancel`.
+    pub fn confirm_delete_choose(&mut self, delete: bool) {
+        if let Mode::ConfirmDelete { delete: d, .. } = &mut self.mode {
+            *d = delete;
+        }
+    }
+
+    /// Take the delete popup's highlighted button.
+    pub fn confirm_delete_pick(&mut self) {
+        let Mode::ConfirmDelete { comment, delete } =
+            std::mem::replace(&mut self.mode, Mode::Normal)
+        else {
             return;
         };
+        if delete {
+            self.delete(&comment);
+        }
+    }
+
+    /// Close the delete popup, deleting nothing.
+    pub fn cancel_delete(&mut self) {
+        if matches!(self.mode, Mode::ConfirmDelete { .. }) {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// Remove the targeted comment's lines from its file, unasked.
+    pub fn delete_comment(&mut self) {
+        if let Some(c) = self.deletable_comment() {
+            self.delete(&c);
+        }
+    }
+
+    /// Remove comment `c`'s lines from its file. The write refuses when the file no longer
+    /// holds the comment as the popup showed it (Comments survive).
+    fn delete(&mut self, c: &Comment) {
         logln!("comment delete {}", c.location());
-        match review::delete(&self.repo, &c) {
+        match review::delete(&self.repo, c) {
             Ok(()) => {
                 self.status = "comment deleted".to_string();
                 self.comment_written(&c.file);
@@ -4058,9 +4119,8 @@ impl App {
         }
     }
 
-    /// Select card `i` on the Comments tab and open its box: a selected comment is one being
-    /// edited. The box being left saves first; a refused save keeps it open, so nothing typed
-    /// is lost.
+    /// Select card `i` on the Comments tab and open its box. The box being left saves first; a
+    /// refused save keeps it open, so nothing typed is lost.
     pub fn open_card(&mut self, i: usize, reveal: Reveal) {
         if i >= self.store.len() || !self.close_card_box() {
             return;
@@ -4086,22 +4146,17 @@ impl App {
         !self.composing()
     }
 
-    /// Step the Comments tab's selection `delta` cards and open the one it lands on. With a box
-    /// open at the first or last card there is nowhere to go, so it stays open.
+    /// Step the Comments tab's selection `delta` cards, clamped at the ends. Only `edit` opens
+    /// a card's box.
     pub fn step_comment(&mut self, delta: isize) {
-        let Some(last) = self.store.len().checked_sub(1) else { return };
-        let to = self.comments.cursor.saturating_add_signed(delta).min(last);
-        if to == self.comments.cursor && self.composing() {
-            return;
-        }
-        self.open_card(to, Reveal::Visible);
+        self.comments.step(delta, self.store.len());
     }
 
-    /// Open the first comment of the next (`forward`) or previous file.
+    /// Select the first comment of the next (`forward`) or previous file.
     pub fn step_comment_file(&mut self, forward: bool) {
         if let Some(i) = crate::comments_tab::file_step(&self.store, self.comments.cursor, forward)
         {
-            self.open_card(i, Reveal::Top);
+            self.select_comment(i, Reveal::Top);
         }
     }
 
@@ -4139,15 +4194,12 @@ impl App {
         // and no bands. The escape action comes right after the primary so the exit hint survives a
         // narrow-width trim (trailing `Do` actions drop first).
         match self.mode {
-            // A card's box on the Comments tab: `esc` reverts, and the arrows run on past the
-            // box to the next card, saving this one.
+            // A card's box on the Comments tab: `esc` reverts.
             Mode::Composing { .. } if self.edited_card().is_some() => {
-                return vec![
-                    (A::Save, Primary),
-                    (A::Revert, Do),
-                    (A::StepCard, Do),
-                    (A::Newline, Do),
-                ];
+                return vec![(A::Save, Primary), (A::Revert, Do), (A::Newline, Do)];
+            }
+            Mode::ConfirmDelete { .. } => {
+                return vec![(A::PickButton, Primary), (A::Cancel, Do), (A::MoveButton, Do)];
             }
             Mode::Composing { .. } => {
                 return vec![(A::Save, Primary), (A::Cancel, Do), (A::Newline, Do)];

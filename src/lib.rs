@@ -1054,19 +1054,24 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             Enter if alt_or_shift => app.input_push('\n'),
             Enter => app.submit_comment(),
             Char('j') if ctrl => app.input_push('\n'),
-            // The box wraps, so `↑`/`↓` walk display rows here rather than editing text. On the
-            // Comments tab the stack reads as one document: past the box's first or last row
-            // they save it and open the card above or below.
+            // The box wraps, so `↑`/`↓` walk display rows here rather than editing text.
             Up | Down => {
-                let down = key.code == Down;
-                let to = ui::caret_vertical(&app.input, app.caret, cw, down);
-                if to == app.caret && app.edited_card().is_some() {
-                    app.step_comment(if down { 1 } else { -1 });
-                } else {
-                    app.caret = to;
-                }
+                app.caret = ui::caret_vertical(&app.input, app.caret, cw, key.code == Down);
             }
             code => apply_text_edit(app, code, ctrl, alt, word),
+        }
+        return Ok(());
+    }
+
+    // The delete popup: `←`/`→` move between its two buttons, `enter` takes the highlighted
+    // one, `esc` cancels. Every other key is inert.
+    if matches!(app.mode, Mode::ConfirmDelete { .. }) {
+        match key.code {
+            Esc => app.cancel_delete(),
+            Enter => app.confirm_delete_pick(),
+            Left => app.confirm_delete_choose(false),
+            Right => app.confirm_delete_choose(true),
+            _ => {}
         }
         return Ok(());
     }
@@ -1261,7 +1266,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             // `edit` runs from either pane: the read pane's comment or line, the navigator's
             // selected file.
             K::Edit => app.start_edit(),
-            K::Delete if app.focus == Focus::Diff => app.delete_comment(),
+            K::Delete if app.focus == Focus::Diff => app.ask_delete_comment(),
             K::Copy => {
                 app.export(&Clipboard);
             }
@@ -1305,7 +1310,6 @@ fn handle_comments_key(
         let step = if halves { viewport / 2 } else { viewport.saturating_sub(2) };
         let lines = isize::try_from(step.max(1)).unwrap_or(isize::MAX);
         app.comments.page(pages * lines, &heights, viewport);
-        app.open_card(app.comments.cursor, crate::comments_tab::Reveal::Visible);
     };
     match action {
         Some(K::Down | K::NextComment) => app.step_comment(1),
@@ -1318,7 +1322,7 @@ fn handle_comments_key(
         Some(K::HalfUp) => page(app, -1, true),
         Some(K::OpenComment) => app.open_comment_in_files()?,
         Some(K::Edit) => app.start_edit(),
-        Some(K::Delete) => app.delete_comment(),
+        Some(K::Delete) => app.ask_delete_comment(),
         Some(
             K::Expand
             | K::Collapse
@@ -1340,25 +1344,26 @@ fn handle_comments_key(
     Ok(true)
 }
 
-/// A left click on the Comments tab's body. Selecting a comment opens it for editing — a
-/// navigator row (a file's row opens its first comment), or anywhere on a card — and the box
-/// being left saves first. A card's heading opens the comment in `All files` instead. A click
-/// on the card already open leaves its box, caret and all, as it is.
+/// A left click on the Comments tab's body. A navigator row (a file's row selects its first
+/// comment) or a card's code selects the comment; its box opens it for editing, as in the
+/// diff. A card's heading opens the comment in `All files` instead. The box being left saves
+/// first, and a click on the card already open leaves its box, caret and all, as it is.
 fn comments_click(app: &mut App, m: MouseEvent, area: Rect) -> Result<()> {
     use crate::comments_tab::Reveal;
     use ui::CommentsHit as H;
-    match ui::comments_hit(area, app, m.column, m.row) {
-        Some(H::NavComment(i) | H::NavFile(i)) => app.open_card(i, Reveal::Top),
-        Some(H::Heading(i)) => {
-            if app.close_card_box() {
-                app.select_comment(i, Reveal::Visible);
-                app.open_comment_in_files()?;
-            }
+    let Some(hit) = ui::comments_hit(area, app, m.column, m.row) else { return Ok(()) };
+    let on_open_card = matches!(hit, H::Box(i) | H::Card(i) if app.edited_card() == Some(i));
+    if on_open_card || !app.close_card_box() {
+        return Ok(());
+    }
+    match hit {
+        H::NavComment(i) | H::NavFile(i) => app.select_comment(i, Reveal::Top),
+        H::Heading(i) => {
+            app.select_comment(i, Reveal::Visible);
+            app.open_comment_in_files()?;
         }
-        Some(H::Box(i) | H::Card(i)) if app.edited_card() != Some(i) => {
-            app.open_card(i, Reveal::Visible);
-        }
-        _ => {}
+        H::Box(i) => app.open_card(i, Reveal::Visible),
+        H::Card(i) => app.select_comment(i, Reveal::Visible),
     }
     Ok(())
 }
@@ -1849,6 +1854,15 @@ pub fn handle_mouse(
             }
         }
         match m.kind {
+            // A click on either of the delete popup's buttons takes it.
+            MouseEventKind::Down(MouseButton::Left)
+                if matches!(app.mode, Mode::ConfirmDelete { .. }) =>
+            {
+                if let Some(delete) = ui::hit_delete_button(area, app, m.column, m.row) {
+                    app.confirm_delete_choose(delete);
+                    app.confirm_delete_pick();
+                }
+            }
             // Click to highlight, click the highlight to pick.
             MouseEventKind::Down(MouseButton::Left) if app.mode == Mode::BasePick => {
                 match ui::hit_base_picker_row(area, app, m.column, m.row) {

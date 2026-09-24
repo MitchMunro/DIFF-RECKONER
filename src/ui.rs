@@ -116,6 +116,7 @@ fn render_frame(frame: &mut Frame, app: &App) {
     let popup: Option<fn(&mut Frame, &App, Rect)> = match app.mode {
         Mode::BasePick => Some(render_base_picker),
         Mode::CommitPick => Some(render_commit_picker),
+        Mode::ConfirmDelete { .. } => Some(render_delete_confirm),
         Mode::Normal | Mode::Composing { .. } | Mode::Search | Mode::Find | Mode::ThemePick => None,
     };
     if let Some(render_popup) = popup {
@@ -1410,9 +1411,8 @@ fn header_suffix(app: &App) -> String {
 
 /// The header's shared left side, painted by both tab bars: the lead pad, the tab strip as
 /// buttons, and the trailing gap before each header's own suffix. One source so the two
-/// headers can't drift. The active tab is a pill in the cursor's fill; the rest are ghost
-/// buttons, blue text on no fill, since no gray fill reads on every terminal background. The
-/// one under the pointer bolds and underlines.
+/// headers can't drift. The active tab is a pill in the cursor's fill; the rest are idle
+/// buttons ([`idle_button`]). The one under the pointer bolds and underlines.
 fn tab_bar_spans(app: &App, line: Rect) -> Vec<Span<'static>> {
     let p = app.palette();
     let bar = Style::default();
@@ -1427,13 +1427,12 @@ fn tab_bar_spans(app: &App, line: Rect) -> Vec<Span<'static>> {
         let style = if active {
             bar.bg(p.sel_bg).fg(p.sel_fg.unwrap_or(p.text)).add_modifier(Modifier::BOLD)
         } else if hovered == Some(slot) {
-            bar.fg(p.blue).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            idle_button(p).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
-            bar.fg(p.blue)
+            idle_button(p)
         };
-        // Only the active pill fills its padding; a ghost's padding stays bare, so the hover
-        // underline runs under the label alone.
-        let pad = if active { style } else { bar };
+        // The padding fills with the pill, but the hover underline runs under the label alone.
+        let pad = style.remove_modifier(Modifier::UNDERLINED);
         spans.push(Span::styled(PILL_PAD, pad));
         if slot == Tab::Comments && comments > 0 {
             // The count wears the comment dot's hue so it reads at a glance, except on the
@@ -1521,6 +1520,18 @@ const DIR_DOT_RESERVE: usize = 2;
 /// one inside (design doc §6). Beside the name rather than right-aligned, so it never
 /// collides with the stats or the change dot, and in its own hue.
 const COMMENT_DOT: &str = " •";
+
+/// A button that is not the selected one — an inactive tab, the delete popup's other choice:
+/// a dull gray fill, so the selected button's blue is the only one that stands out, under
+/// text bright enough to read on it. The `terminal` theme's dull gray is ANSI bright black,
+/// under its default text: faint text sinks into it.
+fn idle_button(p: &Palette) -> Style {
+    if p.follows_terminal() {
+        Style::default().bg(Color::DarkGray).fg(Color::Reset)
+    } else {
+        Style::default().bg(p.surface1).fg(p.dim0)
+    }
+}
 
 /// The hue of the outstanding-comment marks: the navigator's dots and the tab bar's count.
 fn comment_hue(p: &Palette) -> Color {
@@ -2577,7 +2588,16 @@ pub fn age_label(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{DELETE_QUESTION, delete_quote};
     use super::{box_rows, caret_rowcol, composer_caret_cell_position, single_line_caret_view};
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn the_delete_quote_is_never_wider_than_the_question() {
+        assert_eq!(delete_quote("short\nnote"), "\"short note\"", "a short comment shows whole");
+        let wide = delete_quote(&"漢".repeat(40));
+        assert!(wide.ends_with("...\"") && wide.width() <= DELETE_QUESTION.width(), "{wide}");
+    }
 
     /// The production pairing: box rows built at the same width the caret maps against.
     fn caret_cell(input: &str, caret: usize, content_w: usize) -> (usize, usize) {
@@ -2690,7 +2710,8 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Newline => ("shift+enter".into(), "newline"),
         A::Cancel | A::ClosePicker => ("esc".into(), "cancel"),
         A::Revert => ("esc".into(), "revert"),
-        A::StepCard => ("↑↓".into(), "comments"),
+        A::PickButton => ("enter".into(), "choose"),
+        A::MoveButton => ("←→".into(), "move"),
         A::CloseSearch | A::CloseFind => ("esc".into(), "close"),
         // The digits are literal, so they are spelled; the two movement keys are bound, so they
         // read off the keymap like every other hint.
@@ -3335,6 +3356,99 @@ fn body_popup(area: Rect, app: &App, w: u16, h: u16) -> Rect {
         y: body.y + body.height.saturating_sub(h) / 2,
         width: w,
         height: h,
+    }
+}
+
+/// The delete popup's question, above the comment's opening words.
+const DELETE_QUESTION: &str = "Are you sure you want to delete the comment:";
+const CANCEL_BUTTON: &str = " Cancel ";
+const DELETE_BUTTON: &str = " Delete ";
+const BUTTON_GAP: u16 = 3;
+
+/// The comment on one line, quoted, and cut with `...` so the whole quote is never wider than
+/// [`DELETE_QUESTION`].
+fn delete_quote(text: &str) -> String {
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let width = DELETE_QUESTION.width();
+    if flat.width() + 2 <= width {
+        return format!("\"{flat}\"");
+    }
+    let mut budget = width - "\"...\"".width();
+    let cut: String = flat
+        .chars()
+        .take_while(|&ch| {
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+            let fits = w <= budget;
+            budget = budget.saturating_sub(w);
+            fits
+        })
+        .collect();
+    format!("\"{}...\"", cut.trim_end())
+}
+
+/// The delete popup: sized to its question, with a blank row of air around the message and
+/// the buttons.
+fn delete_popup(area: Rect, app: &App) -> Rect {
+    body_popup(area, app, DELETE_QUESTION.width() as u16 + 4, 8)
+}
+
+/// The delete popup's `Cancel` and `Delete` buttons, centred on the row below the message.
+/// One source for the paint and the click.
+fn delete_buttons(popup: Rect) -> (Rect, Rect) {
+    let inner = picker_inner(popup);
+    let (cw, dw) = (CANCEL_BUTTON.width() as u16, DELETE_BUTTON.width() as u16);
+    let x = inner.x + inner.width.saturating_sub(cw + BUTTON_GAP + dw) / 2;
+    let y = inner.y + 4;
+    let cancel = Rect { x, y, width: cw, height: 1 }.intersection(inner);
+    let delete = Rect { x: x + cw + BUTTON_GAP, y, width: dw, height: 1 }.intersection(inner);
+    (cancel, delete)
+}
+
+fn render_delete_confirm(frame: &mut Frame, app: &App, area: Rect) {
+    let Mode::ConfirmDelete { comment, delete } = &app.mode else { return };
+    let p = app.palette();
+    let popup = delete_popup(area, app);
+    frame.render_widget(Clear, popup);
+    let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(p.red));
+    let inner = picker_inner(popup);
+    frame.render_widget(block, popup);
+    let message = vec![
+        Line::from(""),
+        Line::from(Span::styled(format!(" {DELETE_QUESTION}"), text_style(p))),
+        Line::from(Span::styled(
+            format!(" {}", delete_quote(&comment.text)),
+            Style::default().fg(comment_hue(p)),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(message), inner);
+    // Filled buttons: the highlighted one in the active tab's blue, the other idle gray.
+    let idle = idle_button(p);
+    let (cancel, delete_at) = delete_buttons(popup);
+    for (rect, label, on) in [(cancel, CANCEL_BUTTON, !delete), (delete_at, DELETE_BUTTON, *delete)]
+    {
+        let style = if on {
+            Style::default()
+                .bg(p.sel_bg)
+                .fg(p.sel_fg.unwrap_or(p.text))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            idle
+        };
+        frame.render_widget(Paragraph::new(Span::styled(label, style)), rect);
+    }
+}
+
+/// The delete popup's button under the pointer: `Some(true)` for `Delete`, `Some(false)` for
+/// `Cancel`.
+pub fn hit_delete_button(area: Rect, app: &App, col: u16, row: u16) -> Option<bool> {
+    let (cancel, delete) = delete_buttons(delete_popup(area, app));
+    let pos = ratatui::layout::Position { x: col, y: row };
+    if delete.contains(pos) {
+        Some(true)
+    } else if cancel.contains(pos) {
+        Some(false)
+    } else {
+        None
     }
 }
 

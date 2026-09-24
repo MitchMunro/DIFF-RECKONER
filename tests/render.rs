@@ -1245,7 +1245,7 @@ fn a_click_on_the_comments_tab_selects_opens_and_edits_by_where_it_lands() {
         app.focus = Focus::Diff;
         app.diff_cursor = app.visible.iter().position(|r| r.marker() == '+').unwrap();
         app.start_comment();
-        app.input_push('x');
+        app.input_paste(&format!("note-{path}"));
         app.submit_comment();
     }
     app.set_tab(Tab::Comments).unwrap();
@@ -1273,23 +1273,77 @@ fn a_click_on_the_comments_tab_selects_opens_and_edits_by_where_it_lands() {
     click(&mut app, nav_x + 4, b_row + 1);
     assert_eq!(app.comments.cursor, 1);
     assert_eq!(app.comments.reveal, Some(Reveal::Top), "a navigator pick scrolls to the card");
-    assert_eq!(app.edited_card(), Some(1), "and opens its box for editing, as in the diff");
-    // The open box frees the mouse: a file row opens that file's first comment.
+    assert_eq!(app.edited_card(), None, "and opens nothing");
+    // A file row selects that file's first comment.
     let (_, a_row) = find(&out, "a.rs");
     click(&mut app, nav_x + 2, a_row);
-    assert_eq!(app.edited_card(), Some(0));
+    assert_eq!((app.comments.cursor, app.edited_card()), (0, None));
 
-    // A click on a card's code opens it; its `path:line` opens it in Files.
+    // A click on a card's code selects it, and on its comment opens it for editing, as in the
+    // diff.
     let out = render(&app);
     let (code_x, code_y) = find(&out, "THREE");
     click(&mut app, code_x, code_y);
-    assert_eq!(app.edited_card(), Some(1), "a click on the card's code opens it");
+    assert_eq!((app.comments.cursor, app.edited_card()), (1, None));
+    let out = render(&app);
+    let (note_x, note_y) = find(&out, "1 note-b.rs");
+    click(&mut app, note_x, note_y);
+    assert_eq!(app.edited_card(), Some(1), "a click on the comment opens its box");
     assert_eq!(app.tab, Tab::Comments);
+    // The open box frees the mouse; its `path:line` opens it in Files.
     let out = render(&app);
     let (x, y) = find(&out, "b.rs:1");
     click(&mut app, x + 1, y);
     assert_eq!(app.tab, Tab::AllFiles, "the heading opens the comment in Files");
     assert_eq!(app.diff_path.as_deref(), Some("b.rs"));
+}
+
+#[test]
+fn the_delete_popup_quotes_the_comment_and_its_buttons_click() {
+    use diff_reckoner::app::{Mode, Tab};
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    r.write("a.rs", "ONE\n");
+    let mut app = app_on(&r);
+    app.select_file(0).unwrap();
+    app.focus = Focus::Diff;
+    app.diff_cursor = app.visible.iter().position(|r| r.marker() == '+').unwrap();
+    app.start_comment();
+    app.input_paste("Test comment here yessssa and then some more");
+    app.submit_comment();
+    app.set_tab(Tab::Comments).unwrap();
+    let keymap = app.keymap().clone();
+    let click = |app: &mut App, column: u16, row: u16| {
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(app, down, AREA, &[], &keymap, &diff_reckoner::export::Clipboard).unwrap();
+    };
+    let find = |out: &str, needle: &str| -> (u16, u16) {
+        let (y, line) = out.lines().enumerate().find(|(_, l)| l.contains(needle)).unwrap();
+        let x = line.find(needle).unwrap();
+        (line[..x].chars().count() as u16, y as u16)
+    };
+
+    app.ask_delete_comment();
+    let out = render(&app);
+    assert!(out.contains("Are you sure you want to delete the comment:"), "{out}");
+    // The quote, ellipsis and all, is exactly as wide as the question.
+    assert!(out.contains("\"Test comment here yessssa and then some...\""), "{out}");
+    let (x, y) = find(&out, "Cancel");
+    click(&mut app, x, y);
+    assert_eq!((app.mode.clone(), app.store.len()), (Mode::Normal, 1), "`Cancel` deletes nothing");
+
+    app.ask_delete_comment();
+    let out = render(&app);
+    let (x, y) = find(&out, "Delete");
+    click(&mut app, x, y);
+    assert_eq!((app.mode.clone(), app.store.len()), (Mode::Normal, 0), "`Delete` deletes");
+    assert_eq!(r.read("a.rs"), "ONE\n");
 }
 
 #[test]
@@ -3025,7 +3079,7 @@ fn header_cell(buf: &Buffer, label: &str) -> u16 {
 }
 
 #[test]
-fn the_active_tab_is_a_pill_and_the_hovered_ghost_underlines() {
+fn the_active_tab_is_a_blue_pill_and_the_hovered_idle_pill_underlines() {
     use ratatui::style::Modifier;
     let r = dotted_repo();
     let mut app = app_on(&r);
@@ -3033,18 +3087,20 @@ fn the_active_tab_is_a_pill_and_the_hovered_ghost_underlines() {
     let buf = render_buffer(&app);
     let changes = header_cell(&buf, "1 Changes");
     let files = header_cell(&buf, "2 Files");
-    // The pill's padding is filled too, so the button has edges.
+    // Every pill's padding is filled too, so each button has edges.
     for x in [changes - 1, changes] {
         assert_eq!(buf.cell((x, 1)).unwrap().bg, p.sel_bg, "the active tab takes the cursor fill");
     }
-    let ghost = buf.cell((files, 1)).unwrap();
-    assert_eq!((ghost.bg, ghost.fg), (p.base, p.blue), "an inactive tab is blue on no fill");
-    assert!(!ghost.modifier.contains(Modifier::UNDERLINED));
+    for x in [files - 1, files] {
+        let idle = buf.cell((x, 1)).unwrap();
+        assert_eq!((idle.bg, idle.fg), (p.surface1, p.dim0), "an inactive tab is dull gray");
+        assert!(!idle.modifier.contains(Modifier::UNDERLINED));
+    }
 
     app.hover = Some((files + 2, 1));
     let buf = render_buffer(&app);
     let cell = buf.cell((files, 1)).unwrap();
-    assert_eq!(cell.bg, p.base, "the hovered ghost stays unfilled");
+    assert_eq!(cell.bg, p.surface1, "the hovered tab keeps its fill");
     assert!(cell.modifier.contains(Modifier::BOLD | Modifier::UNDERLINED), "and underlines");
     let pad = buf.cell((files - 1, 1)).unwrap();
     assert!(!pad.modifier.contains(Modifier::UNDERLINED), "under the label alone");
