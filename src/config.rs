@@ -910,11 +910,11 @@ mod tests {
     #[test]
     fn a_rebind_colliding_with_a_default_names_both_actions() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "[keybindings]\nexpand = [\"l\"]\n")
+        std::fs::write(dir.path().join("config.toml"), "[keybindings]\nexpand = [\"3\"]\n")
             .unwrap();
         let error = super::plugin_config_in(dir.path()).unwrap_err().to_string();
         assert!(
-            error.contains("`expand`") && error.contains("`comments`") && error.contains('l'),
+            error.contains("`expand`") && error.contains("`comments`") && error.contains('3'),
             "{error}"
         );
     }

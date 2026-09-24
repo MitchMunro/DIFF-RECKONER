@@ -1807,6 +1807,7 @@ pub fn handle_mouse(
             if let Some(hit) = ui::hit_header(area, app, keymap, m.column, m.row) {
                 match hit {
                     ui::HeaderHit::Tab(tab) => app.set_tab(tab)?,
+                    ui::HeaderHit::Comments => app.open_list(),
                     ui::HeaderHit::Scope => app.set_scope(app.next_chip_scope())?,
                     // Inert when the picker cannot open here — with a `--base` flag the
                     // label names the base without offering a choice.

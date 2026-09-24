@@ -6,6 +6,7 @@
 //! overlay is drawn on top when open. Rendering reads `App` only; all state changes
 //! live in `app.rs`.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1170,6 +1171,8 @@ pub fn caret_vertical(input: &str, caret: usize, content_w: usize, down: bool) -
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HeaderHit {
     Tab(Tab),
+    /// The outstanding-comment count; the click opens the comments list.
+    Comments,
     Scope,
     /// The `branch` scope's base label; the click opens the base picker.
     Base,
@@ -1187,10 +1190,13 @@ pub fn hit_header(area: Rect, app: &App, keymap: &Keymap, col: u16, row: u16) ->
         return None;
     }
     let col = col - line.x;
-    let spans = tab_spans(keymap);
-    for &(tab, start, end) in &spans {
+    let spans = tab_spans(keymap, app.store.len());
+    for &(slot, start, end) in &spans {
         if (start as u16..end as u16).contains(&col) {
-            return Some(HeaderHit::Tab(tab));
+            return Some(match slot {
+                TabSlot::Tab(tab) => HeaderHit::Tab(tab),
+                TabSlot::Comments => HeaderHit::Comments,
+            });
         }
     }
     let prefix = header_prefix_len(&spans);
@@ -1213,17 +1219,36 @@ pub fn hit_header(area: Rect, app: &App, keymap: &Keymap, col: u16, row: u16) ->
     None
 }
 
-/// The three tabs and their labels, left to right, each led by its `tab-*` action's hint key
+/// One entry in the header's tab strip: a tab, or the outstanding-comment count (design doc
+/// §6), which opens the comments list until a Comments tab replaces it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TabSlot {
+    Tab(Tab),
+    Comments,
+}
+
+/// The tab strip's entries and their labels, left to right, each led by its action's hint key.
 /// Column math uses display width, since a bound hint key can be wide.
-fn tab_labels(keymap: &Keymap) -> [(Tab, String); 2] {
+fn tab_labels(keymap: &Keymap, comments: usize) -> [(TabSlot, String); 3] {
     use crate::keymap::Action as K;
     [
-        (Tab::Changes, format!("{} Changes", keymap.hint(K::TabChanges).label())),
-        (Tab::AllFiles, format!("{} Files", keymap.hint(K::TabAllFiles).label())),
+        (TabSlot::Tab(Tab::Changes), format!("{} Changes", keymap.hint(K::TabChanges).label())),
+        (TabSlot::Tab(Tab::AllFiles), format!("{} Files", keymap.hint(K::TabAllFiles).label())),
+        (
+            TabSlot::Comments,
+            format!("{} Comments{}", keymap.hint(K::Comments).label(), comment_count(comments)),
+        ),
     ]
 }
+
+/// The comments entry's count suffix, ` (N)`, empty when nothing is outstanding.
+fn comment_count(comments: usize) -> String {
+    if comments == 0 { String::new() } else { format!(" ({comments})") }
+}
 const HEADER_LEAD: &str = " ";
-const TAB_GAP: &str = "  ";
+/// The fill each side of a tab's label, so the label sits inside its pill.
+const PILL_PAD: &str = " ";
+const TAB_GAP: &str = " ";
 const HEADER_GAP: &str = "  ";
 /// The gap between the scope chip and the base label — one spelling shared by the paint,
 /// the width math, and the click hit-test, so the painted text and the clickable region
@@ -1239,24 +1264,39 @@ fn indicator_glyph(app: &App) -> &'static str {
     if app.refresh_indicator { "⟳" } else { " " }
 }
 
-/// Each tab's `(tab, start_col, end_col)` in the header, the single source the bar paints and
-/// the click hit-tests against.
-fn tab_spans(keymap: &Keymap) -> Vec<(Tab, usize, usize)> {
+/// Each entry's `(slot, start_col, end_col)` in the header, the single source the bar paints
+/// and the click hit-tests against.
+fn tab_spans(keymap: &Keymap, comments: usize) -> Vec<(TabSlot, usize, usize)> {
     let mut col = HEADER_LEAD.len();
     let mut out = Vec::new();
-    for (i, (tab, label)) in tab_labels(keymap).iter().enumerate() {
+    for (i, (slot, label)) in tab_labels(keymap, comments).iter().enumerate() {
         if i > 0 {
             col += TAB_GAP.len();
         }
-        out.push((*tab, col, col + label.width()));
-        col += label.width();
+        let pill = PILL_PAD.len() + label.width() + PILL_PAD.len();
+        out.push((*slot, col, col + pill));
+        col += pill;
     }
     out
 }
 
+/// The tab-strip entry under the pointer, for the hover fill. Inert under a modal, like the
+/// gutter's hover `+`: the header takes no clicks there.
+fn hovered_tab(app: &App, line: Rect) -> Option<TabSlot> {
+    let (col, row) = app.hover.filter(|_| !app.mode.is_modal())?;
+    if row != line.y || !(line.x..line.x + line.width).contains(&col) {
+        return None;
+    }
+    let col = (col - line.x) as usize;
+    tab_spans(app.keymap(), app.store.len())
+        .into_iter()
+        .find(|&(_, start, end)| (start..end).contains(&col))
+        .map(|(slot, ..)| slot)
+}
+
 /// The column where the scope chip starts: past the tab bar, its reserved spinner cell,
 /// and its trailing gap.
-fn header_prefix_len(spans: &[(Tab, usize, usize)]) -> usize {
+fn header_prefix_len(spans: &[(TabSlot, usize, usize)]) -> usize {
     spans.last().map_or(HEADER_LEAD.len(), |&(_, _, end)| end) + INDICATOR_CELL + HEADER_GAP.len()
 }
 
@@ -1327,7 +1367,7 @@ fn pick_label(app: &App) -> Option<(String, String, String, String)> {
 fn base_parts(app: &App, keymap: &Keymap, width: u16) -> Option<(String, String, String)> {
     let (lead, shown, marker, tail) = base_label(app)?;
     // Everything else on the line plus the base's own gap and the suffix's minimum gap.
-    let fixed = header_prefix_len(&tab_spans(keymap))
+    let fixed = header_prefix_len(&tab_spans(keymap, app.store.len()))
         + scope_chip(app).len()
         + BASE_GAP.len()
         + lead.width()
@@ -1371,23 +1411,50 @@ fn header_suffix(app: &App) -> String {
     format!("{} changed{gap}{stats}", app.changed_count())
 }
 
-/// The header's shared left side, painted by both tab bars: the lead pad, the three tab labels
-/// (the active one bright + underlined, the inactive ones at `SUBTEXT0`), and the trailing gap
-/// before each header's own suffix. One source so the two headers can't drift.
-fn tab_bar_spans(app: &App) -> Vec<Span<'static>> {
+/// The header's shared left side, painted by both tab bars: the lead pad, the tab strip as
+/// buttons, and the trailing gap before each header's own suffix. One source so the two
+/// headers can't drift. The active tab is a pill in the cursor's fill; the rest are ghost
+/// buttons, blue text on no fill, since no gray fill reads on every terminal background. The
+/// one under the pointer bolds and underlines.
+fn tab_bar_spans(app: &App, line: Rect) -> Vec<Span<'static>> {
     let p = app.palette();
     let bar = Style::default();
     let mut spans = vec![Span::styled(HEADER_LEAD, bar)];
-    for (i, (tab, label)) in tab_labels(app.keymap()).into_iter().enumerate() {
+    let comments = app.store.len();
+    let hovered = hovered_tab(app, line);
+    for (i, (slot, label)) in tab_labels(app.keymap(), comments).into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(TAB_GAP, bar));
         }
-        let style = if tab == app.tab {
+        let active = match slot {
+            TabSlot::Tab(tab) => tab == app.tab && app.mode != Mode::List,
+            TabSlot::Comments => app.mode == Mode::List,
+        };
+        let style = if active {
+            bar.bg(p.sel_bg).fg(p.sel_fg.unwrap_or(p.text)).add_modifier(Modifier::BOLD)
+        } else if hovered == Some(slot) {
             bar.fg(p.blue).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
-            bar.fg(p.dim0)
+            bar.fg(p.blue)
         };
-        spans.push(Span::styled(label, style));
+        // Only the active pill fills its padding; a ghost's padding stays bare, so the hover
+        // underline runs under the label alone.
+        let pad = if active { style } else { bar };
+        spans.push(Span::styled(PILL_PAD, pad));
+        if slot == TabSlot::Comments && comments > 0 {
+            // The count wears the comment dot's hue so it reads at a glance, except on the
+            // active fill, where the hue would sink into the blue. The two parts spell out
+            // `label`, which the column math measures.
+            let count = comment_count(comments);
+            let name = label[..label.len() - count.len()].to_string();
+            let count_style =
+                if active { style } else { style.fg(comment_hue(p)).add_modifier(Modifier::BOLD) };
+            spans.push(Span::styled(name, style));
+            spans.push(Span::styled(count, count_style));
+        } else {
+            spans.push(Span::styled(label, style));
+        }
+        spans.push(Span::styled(PILL_PAD, pad));
     }
     // The reserved indicator cell: blank when idle, so nothing shifts.
     spans.push(Span::styled(" ", bar));
@@ -1412,17 +1479,17 @@ fn render_tab_bar(frame: &mut Frame, app: &App, band: Rect) {
         BASE_GAP.len() + lead.width() + name.width() + tail.width()
     });
     let suffix = header_suffix(app);
-    let prefix = header_prefix_len(&tab_spans(app.keymap()));
+    let prefix = header_prefix_len(&tab_spans(app.keymap(), app.store.len()));
     // The suffix keeps the same edge pad as the tab strip's lead.
     let used = prefix + chip.len() + base_width + suffix.width() + HEADER_LEAD.len();
     // Right-align the suffix; at least one gap column when the bar overflows.
     let pad = (area.width as usize).saturating_sub(used).max(1);
 
-    // The active tab in bright blue, the inactive one dimmed, the clickable scope control
+    // The tabs as pills (`tab_bar_spans`), the clickable scope control
     // accented so it reads as a button.
     let p = app.palette();
     let bar = Style::default();
-    let mut spans = tab_bar_spans(app);
+    let mut spans = tab_bar_spans(app, area);
     spans.push(Span::styled(chip, bar.fg(p.yellow).add_modifier(Modifier::BOLD)));
     if let Some((lead, name, tail)) = base {
         // An empty lead is the `no base` state, worn as a warning, except in `commits`,
@@ -1456,6 +1523,15 @@ const DIR_DOT: &str = "•";
 /// The columns every `All files` folder row keeps free for the dot (a gap and the glyph),
 /// so a folder name elides the same way whether or not the dot is painted.
 const DIR_DOT_RESERVE: usize = 2;
+/// The mark after the name of a file holding a review comment, or of a collapsed folder with
+/// one inside (design doc §6). Beside the name rather than right-aligned, so it never
+/// collides with the stats or the change dot, and in its own hue.
+const COMMENT_DOT: &str = " •";
+
+/// The hue of the outstanding-comment marks: the navigator's dots and the tab bar's count.
+fn comment_hue(p: &Palette) -> Color {
+    p.purple
+}
 
 fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
@@ -1475,6 +1551,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let width = inner.width as usize;
+    let commented: HashSet<&str> = app.store.iter().map(|c| c.file.as_str()).collect();
     // Window the rows to the scrolled-to viewport; `file_scroll` keeps the cursor on screen.
     let items: Vec<ListItem> = app
         .file_rows
@@ -1487,7 +1564,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             let fill = RowCursor::at(i == app.file_cursor, app.focus == Focus::Files);
             let nest = "  ".repeat(row.depth);
             match &row.kind {
-                RowKind::Dir { expanded, has_change, .. } => {
+                RowKind::Dir { path, expanded, has_change } => {
                     let arrow = if *expanded { "▾ " } else { "▸ " };
                     // A git-ignored directory recedes into a dim, unbolded row.
                     let name_style = if row.ignored {
@@ -1499,7 +1576,13 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                     // name that has to elide reads the same expanded or collapsed. `Changes`
                     // never paints the dot, so it reserves nothing. Elide the bare name, then
                     // add the slash: eliding `name/` would cut at that slash and leave `…/`.
-                    let reserve = if app.tab == Tab::AllFiles { DIR_DOT_RESERVE } else { 0 };
+                    // A collapsed folder hides its commented files, so it wears their dot;
+                    // expanded, the files wear their own.
+                    let holds_comment = !expanded && dir_holds_comment(path, &commented);
+                    let mut reserve = if app.tab == Tab::AllFiles { DIR_DOT_RESERVE } else { 0 };
+                    if holds_comment {
+                        reserve += COMMENT_DOT.width();
+                    }
                     let lead = format!("{nest}{arrow}");
                     let budget = width.saturating_sub(lead.width() + reserve + 1).max(1);
                     let name = format!("{}/", elide_head(&row.name, budget));
@@ -1507,6 +1590,9 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                         Span::styled(lead, Style::default().fg(p.dim2)),
                         Span::styled(name, name_style),
                     ];
+                    if holds_comment {
+                        spans.push(Span::styled(COMMENT_DOT, Style::default().fg(comment_hue(p))));
+                    }
                     // A collapsed `All files` folder holding a change wears the dot: the
                     // question there is which folders to open, and the children are hidden.
                     // Expanded, its children carry their own markers. On `Changes` every
@@ -1521,7 +1607,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                     }
                     selectable_row(p, spans, width, fill)
                 }
-                RowKind::File { annotation, .. } => {
+                RowKind::File { index, annotation } => {
                     // Unchanged files have no marker. Two spaces hold the chevron's
                     // column so the name lines up with a sibling directory.
                     let indent = if annotation.is_some() { nest } else { format!("{nest}  ") };
@@ -1531,6 +1617,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                             annotation: annotation.as_ref(),
                             name: &row.name,
                             ignored: row.ignored,
+                            commented: commented.contains(app.entries[*index].path.as_str()),
                             emphasis: &[],
                         },
                         width,
@@ -1544,6 +1631,11 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(List::new(items), inner);
 }
 
+/// Whether any file in `commented` lies under the directory `dir`.
+fn dir_holds_comment(dir: &str, commented: &HashSet<&str>) -> bool {
+    commented.iter().any(|f| f.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/')))
+}
+
 /// The fields [`file_row_item`] renders. `emphasis` byte ranges into `name` wear the match
 /// highlight (the search screen's matched characters); a head-elided name remaps them onto the
 /// shown text, dropping only a span that falls entirely in the elided head, which has nowhere
@@ -1553,6 +1645,8 @@ struct FileRowSpec<'a> {
     annotation: Option<&'a Annotation>,
     name: &'a str,
     ignored: bool,
+    /// Whether the file holds a review comment, marked with [`COMMENT_DOT`] after the name.
+    commented: bool,
     emphasis: &'a [(u32, u32)],
 }
 
@@ -1566,12 +1660,13 @@ fn file_row_item(
     fill: RowCursor,
     p: &Palette,
 ) -> ListItem<'static> {
-    let FileRowSpec { indent, annotation, name, ignored, emphasis } = *row;
+    let FileRowSpec { indent, annotation, name, ignored, commented, emphasis } = *row;
     let marker = annotation.map_or(String::new(), |a| format!("{} ", a.change.marker()));
     let (additions, deletions) = annotation.map_or((0, 0), |a| (a.additions, a.deletions));
     let stats = stats_str(additions, deletions);
     let gap = if stats.is_empty() { 0 } else { 2 };
-    let fixed = indent.width() + marker.width() + stats.width() + gap;
+    let dot = if commented { COMMENT_DOT.width() } else { 0 };
+    let fixed = indent.width() + marker.width() + stats.width() + gap + dot;
     let shown = elide_head(name, width.saturating_sub(fixed).max(1));
 
     let mut spans = vec![Span::styled(indent.to_string(), text_style(p))];
@@ -1602,6 +1697,9 @@ fn file_row_item(
         spans.extend(emphasized_spans(&shown, &shown_spans, p.match_hl, |byte| {
             if byte < basename_at { Style::default().fg(p.dim2) } else { base_style }
         }));
+    }
+    if commented {
+        spans.push(Span::styled(COMMENT_DOT, Style::default().fg(comment_hue(p))));
     }
     if !stats.is_empty() {
         let used: usize = spans.iter().map(Span::width).sum();
@@ -3686,6 +3784,7 @@ fn render_search_results(
                         annotation: app.changed_annotation(path),
                         name: path,
                         ignored: false,
+                        commented: false,
                         emphasis: &[],
                     },
                     width,
@@ -3705,6 +3804,7 @@ fn render_search_results(
                         annotation: app.changed_annotation(&hit.path),
                         name: &hit.path,
                         ignored: false,
+                        commented: false,
                         emphasis: &hit.spans,
                     },
                     width,

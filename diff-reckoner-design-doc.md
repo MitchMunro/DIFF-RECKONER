@@ -1,6 +1,7 @@
 # Diff Reckoner — design doc
 
-**Status:** design agreed 2026-09-22. Implemented: §1.1 (the strip), §3 (in-file comments).
+**Status:** design agreed 2026-09-22. Implemented: §1.1 (the strip), §3 (in-file comments), §6 (outstanding-comment indicators;
+the count opens the comments list until §5.3's tab lands).
 
 A standalone terminal diff reviewer. You read a change, drop review comments
 into the code, and hand the lot to an agent to address. Forked from

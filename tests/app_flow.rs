@@ -1531,11 +1531,10 @@ fn default_arrows_fold_a_folder_and_scroll_the_diff_elsewhere() {
 fn expand_rebinds_to_a_character_and_the_freed_arrow_goes_dead() {
     let r = folder_repo();
     let mut app = app_on(&r);
-    // The vim shape: `l`/`h` fold, `comments` moves off `l` to make room.
+    // The vim shape: `l`/`h` fold.
     let keymap = Keymap::resolve(&[
         (Action::Expand, vec![Key::plain('l')]),
         (Action::Collapse, vec![Key::plain('h')]),
-        (Action::Comments, vec![Key::plain('L')]),
     ])
     .unwrap();
     app.focus = Focus::Files;
@@ -3232,7 +3231,7 @@ fn the_comments_list_ignores_quit_and_closes_on_the_comments_binding() {
     assert_eq!(app.mode, Mode::List, "`q` does not close the list");
     assert!(!app.should_quit, "and does not quit");
 
-    press(&mut app, &keymap, KeyCode::Char('l'));
+    press(&mut app, &keymap, KeyCode::Char('3'));
     assert_eq!(app.mode, Mode::Normal, "the `comments` binding closes it");
 
     app.open_list();

@@ -186,7 +186,7 @@ const ACTIONS: [(Action, &str, &[Key]); 39] = [
     (Action::Delete, "delete", &[Key::plain('d')]),
     (Action::NextComment, "next-comment", &[Key::plain('n')]),
     (Action::PrevComment, "prev-comment", &[Key::plain('N')]),
-    (Action::Comments, "comments", &[Key::plain('l')]),
+    (Action::Comments, "comments", &[Key::plain('3')]),
     (Action::Search, "search", &[Key::plain('/')]),
     (Action::Find, "find", &[Key::ctrl('f')]),
     (Action::Keys, "keys", &[Key::plain('?')]),

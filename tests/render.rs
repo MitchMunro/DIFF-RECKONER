@@ -633,17 +633,17 @@ fn the_header_totals_the_scope_and_hides_them_at_zero() {
     r.write("untracked.rs", "one\ntwo\n");
     let app = app_on(&r);
 
-    // 66 columns is the exact fit (64 plus the box sides) (the tab strip ends in the two-column reserved
-    // indicator cell). The totals' `−` is multi-byte, so this breaks if the header
-    // measures bytes instead of display width.
-    let header = render_at(&app, 66).lines().nth(1).unwrap().to_string();
+    // 71 columns is the exact fit (69 plus the box sides; the trailing edge pad clips first)
+    // (the tab strip ends in the two-column reserved indicator cell). The totals' `−` is
+    // multi-byte, so this breaks if the header measures bytes instead of display width.
+    let header = render_at(&app, 71).lines().nth(1).unwrap().to_string();
     assert!(header.contains("2 changed  +3 −1"), "count, then the totals:\n{header}");
 
     let clean = Repo::init();
     clean.write("clean.rs", "same\n");
     clean.commit_all("init");
     let app = app_on(&clean);
-    let header = render_at(&app, 80).lines().nth(1).unwrap().to_string();
+    let header = render_at(&app, 71).lines().nth(1).unwrap().to_string();
     assert!(header.contains("0 changed"), "the bare count remains:\n{header}");
     assert!(!header.contains('+'), "an empty changeset shows no totals:\n{header}");
 }
@@ -1354,7 +1354,8 @@ fn the_markdown_preview_renders_styled_lines_without_a_gutter() {
     assert!(out.contains("Install"), "the heading text renders:\n{out}");
     assert!(!out.contains("# Install"), "the # markers are gone in the preview:\n{out}");
     assert!(!out.contains("**all**"), "emphasis markers are consumed:\n{out}");
-    assert!(!out.contains("  1 "), "the preview has no line-number gutter:\n{out}");
+    let body: String = out.lines().skip(3).collect::<Vec<_>>().join("\n");
+    assert!(!body.contains("  1 "), "the preview has no line-number gutter:\n{out}");
     let footer = out.lines().last().unwrap();
     assert!(footer.contains("m source"), "the footer leads back to source:\n{footer}");
     assert!(!footer.contains("c comment"), "no comment key in the preview:\n{footer}");
@@ -2578,7 +2579,7 @@ fn a_narrow_header_never_maps_a_click_outside_the_painted_base() {
     // The base label truncates to its budget at a narrow width, and the hit test walks the
     // same arithmetic the paint does: every column it claims carries painted label, and the
     // claim is one unbroken run.
-    for width in [40u16, 56, 72] {
+    for width in [52u16, 68, 84] {
         let area = Rect { x: 0, y: 0, width, height: 12 };
         let line0 = dump(&render_size(&app, width, 12)).lines().nth(1).unwrap().to_string();
         let cells: Vec<char> = line0.chars().collect();
@@ -2624,7 +2625,7 @@ fn an_overlong_skipped_tail_never_evicts_the_base_name() {
     r.commit_all("edit");
     let mut app = app_on(&r);
     app.set_scope(Scope::Branch).unwrap();
-    let line0 = dump(&render_size(&app, 80, 20)).lines().nth(1).unwrap().to_string();
+    let line0 = dump(&render_size(&app, 92, 20)).lines().nth(1).unwrap().to_string();
     assert!(line0.contains("vs main"), "the resolved name keeps first claim: {line0}");
     assert!(line0.contains("· feature/x"), "the skipped tail paints in what remains: {line0}");
     assert!(line0.contains('…'), "the tail truncates with a trailing ellipsis: {line0}");
@@ -2907,6 +2908,113 @@ fn a_collapsed_changes_folder_wears_no_dot_and_reserves_nothing() {
         format!("▸ …{}/ •", &wide[3..]),
         "the reserve elides two columns"
     );
+}
+
+// ---- outstanding-comment indicators (design doc §6) ----
+
+/// `dotted_repo`'s edit to `src/ui.rs`, now carrying a review comment.
+const COMMENTED_UI: &str = "// [- REVIEW -] check this\ny2\n";
+
+/// The header cell holding the first char of `label`: its column, for hover and style checks.
+fn header_cell(buf: &Buffer, label: &str) -> u16 {
+    let line: String = (0..buf.area.width).map(|x| buf.cell((x, 1)).unwrap().symbol()).collect();
+    // The test backend dumps one char per cell, so a char index is a column.
+    let byte = line.find(label).unwrap_or_else(|| panic!("no {label:?} in {line}"));
+    line[..byte].chars().count() as u16
+}
+
+#[test]
+fn the_active_tab_is_a_pill_and_the_hovered_ghost_underlines() {
+    use ratatui::style::Modifier;
+    let r = dotted_repo();
+    let mut app = app_on(&r);
+    let p = *app.palette();
+    let buf = render_buffer(&app);
+    let changes = header_cell(&buf, "1 Changes");
+    let files = header_cell(&buf, "2 Files");
+    // The pill's padding is filled too, so the button has edges.
+    for x in [changes - 1, changes] {
+        assert_eq!(buf.cell((x, 1)).unwrap().bg, p.sel_bg, "the active tab takes the cursor fill");
+    }
+    let ghost = buf.cell((files, 1)).unwrap();
+    assert_eq!((ghost.bg, ghost.fg), (p.base, p.blue), "an inactive tab is blue on no fill");
+    assert!(!ghost.modifier.contains(Modifier::UNDERLINED));
+
+    app.hover = Some((files + 2, 1));
+    let buf = render_buffer(&app);
+    let cell = buf.cell((files, 1)).unwrap();
+    assert_eq!(cell.bg, p.base, "the hovered ghost stays unfilled");
+    assert!(cell.modifier.contains(Modifier::BOLD | Modifier::UNDERLINED), "and underlines");
+    let pad = buf.cell((files - 1, 1)).unwrap();
+    assert!(!pad.modifier.contains(Modifier::UNDERLINED), "under the label alone");
+
+    // The header takes no clicks under a modal, so it shows no hover there either.
+    app.open_commit_picker();
+    let hovered = render_buffer(&app).cell((files, 1)).unwrap().clone();
+    app.hover = None;
+    assert_eq!(hovered, render_buffer(&app).cell((files, 1)).unwrap().clone());
+}
+
+#[test]
+fn the_tab_bar_counts_outstanding_comments_and_the_count_opens_the_list() {
+    let r = dotted_repo();
+    let mut app = app_on(&r);
+    let header = render(&app).lines().nth(1).unwrap().to_string();
+    assert!(header.contains("3 Comments"), "the entry shows with nothing outstanding: {header}");
+    assert!(!header.contains("Comments ("), "no count at zero: {header}");
+
+    r.write("src/ui.rs", COMMENTED_UI);
+    r.write("docs/a.md", "[- REVIEW -] reword\na\n");
+    app.reload().unwrap();
+    let header = render(&app).lines().nth(1).unwrap().to_string();
+    assert!(header.contains("3 Comments (2)"), "the count: {header}");
+
+    // The test backend dumps one char per cell, so a char index is a column.
+    let cells: Vec<char> = header.chars().collect();
+    let at = (0..cells.len()).find(|&i| cells[i..].starts_with(&['(', '2', ')'])).unwrap();
+    assert_eq!(
+        ui::hit_header(AREA, &app, app.keymap(), at as u16, 1),
+        Some(HeaderHit::Comments),
+        "the count is the click target"
+    );
+    let click = MouseEvent {
+        kind: MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+        column: at as u16,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    };
+    let keymap = app.keymap().clone();
+    handle_mouse(&mut app, click, AREA, &[], &keymap, &diff_reckoner::export::Clipboard).unwrap();
+    assert_eq!(app.mode, diff_reckoner::app::Mode::List, "the click opens the list");
+}
+
+#[test]
+fn a_commented_file_wears_a_dot_beside_its_name() {
+    let r = dotted_repo();
+    r.write("src/ui.rs", COMMENTED_UI);
+    let app = app_on(&r);
+    let row = files_row(&app, "ui.rs");
+    assert!(row.contains("ui.rs •"), "{row:?}");
+    assert!(row.ends_with("+2 −1"), "the stats keep the edge: {row:?}");
+    assert!(!files_row(&app, "zz.rs").contains('•'), "zz.rs holds no comment");
+}
+
+#[test]
+fn a_collapsed_folder_holding_a_comment_wears_the_dot_beside_its_name() {
+    let r = dotted_repo();
+    r.write("src/ui.rs", COMMENTED_UI);
+    let mut app = app_on(&r);
+    enter_tab(&mut app, Tab::AllFiles);
+    assert!(files_row(&app, "src/").starts_with("▸ src/ •"), "{:?}", files_row(&app, "src/"));
+    assert!(dot_at_edge(&app, "src/"), "the change dot keeps the edge");
+    assert!(!files_row(&app, "docs/").contains('•'), "docs/ holds no comment");
+
+    // Expanded, the file wears its own dot and the folder drops it.
+    app.focus = Focus::Files;
+    app.file_cursor = app.file_rows.iter().position(|r| r.dir_path() == Some("src")).unwrap();
+    app.expand_dir();
+    assert!(!files_row(&app, "src/").contains('•'), "{:?}", files_row(&app, "src/"));
+    assert!(files_row(&app, "ui.rs").contains("ui.rs •"), "{:?}", files_row(&app, "ui.rs"));
 }
 
 #[test]
