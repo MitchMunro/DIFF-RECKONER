@@ -2410,6 +2410,15 @@ fn render_find_band(frame: &mut Frame, app: &App, area: Rect) {
 /// A comment box's title, resting or open: the word its tag lines carry.
 const BOX_TITLE: &str = "REVIEW";
 
+/// A comment box's framed title: [`BOX_TITLE`], then what the comment covers
+/// (`REVIEW ─ ln: 141 - 153`).
+fn box_title(target: Option<String>) -> String {
+    framed_title(&match target {
+        Some(t) => format!("{BOX_TITLE} ─ {t}"),
+        None => BOX_TITLE.to_string(),
+    })
+}
+
 /// Tag row `i`'s share of its resting comment box, the composer's shape in neutral colors.
 /// The border brightens while the cursor is anywhere in the comment, and the cursor's own
 /// tag line takes the cursor fill.
@@ -2468,11 +2477,7 @@ fn note_line(line: &NoteLine, c: &Comment, numbered: bool, b: &NoteBox) -> Line<
     let pad = Span::raw(" ".repeat(b.indent));
     match line {
         NoteLine::Top => {
-            let title = framed_title(&match &c.deleted {
-                Some(d) => format!("{BOX_TITLE} · on deleted: {d}"),
-                None => BOX_TITLE.to_string(),
-            });
-            let mut top = format!("┌─{title}");
+            let mut top = format!("┌─{}", box_title(Some(c.target_label())));
             let fill = b.width.saturating_sub(b.indent + top.width() + 1);
             top.push_str(&"─".repeat(fill));
             top.push('┐');
@@ -2513,7 +2518,7 @@ fn render_composer(frame: &mut Frame, app: &App, band: Rect) {
     let accent = Style::default().fg(p.orange);
     let indent = (composer_indent(app) as u16).min(band.width.saturating_sub(3));
     let boxed = Rect { x: band.x + indent, width: band.width - indent, ..band };
-    let mut top = format!("┌─{}", framed_title(BOX_TITLE));
+    let mut top = format!("┌─{}", box_title(app.pending_target()));
     let fill = (boxed.width as usize).saturating_sub(top.width() + 1);
     top.push_str(&"─".repeat(fill));
     top.push('┐');
@@ -2674,9 +2679,11 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
     let hint = |action: K| app.keymap().hint(action).label();
     let (k, l): (String, &str) = match action {
         A::Comment => (hint(K::Comment), "comment"),
-        // One word for one gesture: `v` marks a range end in the diff and the commit picker alike.
-        A::Select | A::CommitAnchor => (hint(K::Select), "select"),
-        A::ClearSelection => ("esc".into(), "clear"),
+        // In the diff `enter` starts and drops a selection; the commit picker's `enter` picks,
+        // so there `select` keeps its own key.
+        A::Select => (hint(K::Activate), "select"),
+        A::CommitAnchor => (hint(K::Select), "select"),
+        A::ClearSelection => (hint(K::Activate), "clear"),
         // The Comments tab has the room to name what it edits; a file tab's row 1 does not.
         A::EditComment => {
             (hint(K::Activate), if app.tab == Tab::Comments { "edit comment" } else { "edit" })

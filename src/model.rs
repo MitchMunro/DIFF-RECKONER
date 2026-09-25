@@ -112,8 +112,11 @@ pub struct Comment {
     pub end: u32,
     /// The text after the tag, one line per tag line.
     pub text: String,
-    /// The start of the removed line a `[DELETED: (...)]` comment was left on (§3.3).
+    /// The start of the removed line a `[DELETED: "..."]` comment was left on (§3.3).
     pub deleted: Option<String>,
+    /// How many lines the comment covers, from its `[SPAN: N lines]` marker; 1 without one.
+    /// Surviving lines from the anchor down, or removed lines for a comment on a deletion.
+    pub span: u32,
     /// The line the comment annotates, the first below its tag lines, verbatim; `None` when
     /// the comment ends the file.
     pub anchor: Option<String>,
@@ -136,13 +139,16 @@ impl Comment {
         }
     }
 
-    /// The text as the list and the export show it: the `[DELETED: (...)]` marker, when
-    /// there is one, leads the first line.
+    /// The text as the list and the export show it: the markers, when there are any, lead
+    /// the first line.
     pub fn display_text(&self) -> String {
-        match &self.deleted {
-            Some(d) => format!("[DELETED: ({d})] {}", self.text),
-            None => self.text.clone(),
-        }
+        format!("{}{}", crate::review::markers(self.deleted.as_deref(), self.span), self.text)
+    }
+
+    /// What the comment covers, for its box title: see [`target_label`]. The anchor is the
+    /// first line below the tag lines.
+    pub fn target_label(&self) -> String {
+        target_label(self.end + 1, self.span, self.deleted.as_deref())
     }
 
     /// Whether `other` is the same comment for reconciling place state: same file, text,
@@ -202,6 +208,18 @@ impl CommentStore {
     }
 }
 
+/// What a comment covers, as its box title names it: `ln: 141` or `ln: 141 - 153` for the
+/// surviving lines from `first` down, `deleted: "..."` or `deleted 3 lines: "..."` for a
+/// comment on a deletion, whose lines have no number in the file.
+pub fn target_label(first: u32, span: u32, deleted: Option<&str>) -> String {
+    match (deleted, span) {
+        (Some(d), 1) => format!("deleted: \"{d}\""),
+        (Some(d), n) => format!("deleted {n} lines: \"{d}\""),
+        (None, 1) => format!("ln: {first}"),
+        (None, n) => format!("ln: {first} - {}", first + n - 1),
+    }
+}
+
 fn sort(comments: &mut [Comment]) {
     comments.sort_by(|a, b| a.file.cmp(&b.file).then(a.start.cmp(&b.start)));
 }
@@ -217,6 +235,7 @@ mod tests {
             end,
             text: text.into(),
             deleted: None,
+            span: 1,
             anchor: Some("x".into()),
             before: Vec::new(),
             after: Vec::new(),
@@ -255,7 +274,21 @@ mod tests {
         let mut c = comment("a.rs", 1, 1, "load-bearing");
         assert_eq!(c.display_text(), "load-bearing");
         c.deleted = Some("let ok = validat".into());
-        assert_eq!(c.display_text(), "[DELETED: (let ok = validat)] load-bearing");
+        assert_eq!(c.display_text(), "[DELETED: \"let ok = validat\"] load-bearing");
+        c.span = 3;
+        assert_eq!(
+            c.display_text(),
+            "[DELETED: \"let ok = validat\"] [SPAN: 3 lines] load-bearing"
+        );
+    }
+
+    #[test]
+    fn target_label_names_the_covered_lines() {
+        use super::target_label;
+        assert_eq!(target_label(141, 1, None), "ln: 141");
+        assert_eq!(target_label(141, 13, None), "ln: 141 - 153");
+        assert_eq!(target_label(9, 1, Some("gone();")), "deleted: \"gone();\"");
+        assert_eq!(target_label(9, 3, Some("gone();")), "deleted 3 lines: \"gone();\"");
     }
 
     #[test]

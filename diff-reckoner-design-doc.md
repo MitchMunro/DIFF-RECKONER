@@ -111,15 +111,39 @@ So a comment on a deleted line anchors to the **nearest surviving line** in the
 new file, and declares itself on its first line:
 
 ```rust
-// [- REVIEW -] [DELETED: (let ok = validate_t)] this check was load-bearing
+// [- REVIEW -] [DELETED: "let ok = validate_token(t)?.ex..."] this check was load-bearing
 // [- REVIEW -] the retry path depends on it
 ```
 
-`[DELETED: (...)]` carries the first 16 characters of the removed line,
-verbatim, in parentheses. First line only. This keeps one source of truth and
-loses nothing — the agent gets the removed code and its location.
+`[DELETED: "..."]` carries the removed line, indentation dropped, verbatim in
+double quotes: the whole line up to 30 characters, else the first 30 and `...`.
+First line only. This keeps one source of truth and loses nothing — the agent
+gets the removed code and its location.
 
 **Wholly deleted files** are refused. There is no file to write into.
+
+### 3.3a Spans
+
+A comment on a selection of more than one line says how many it covers, after
+any `[DELETED]` marker, on its first line:
+
+```rust
+// [- REVIEW -] [SPAN: 13 lines] this whole block belongs in the store
+func add(...)
+```
+
+On surviving lines, the span is the lines directly below the tag lines. A
+count, not line numbers, so an edit above the comment, including the comment's
+own insertion, cannot make it wrong. An edit inside the span can, and then
+the span drifts. On a deletion, `[DELETED: "..."] [SPAN: 3 lines]` counts the
+removed lines starting at the quoted one. A selection mixing removed and
+surviving lines spans its surviving lines only. A one-line comment carries no
+marker.
+
+The comment box titles itself with what it covers: `REVIEW ─ ln: 141 - 153`,
+`REVIEW ─ ln: 141`, or `REVIEW ─ deleted 3 lines: "..."` on a deletion.
+`enter` on a diff line with no other job starts a selection and a second
+`enter` drops it; `c` comments on it.
 
 ### 3.4 Where a comment may not go
 
@@ -265,11 +289,12 @@ Both targets get the same Markdown text, written to an agent:
 
 - A preamble: address the comments, each comment line starts with the tag,
   delete a comment's lines once it is addressed, and leave them with a reason
-  when it is not. A line explaining `[DELETED: (...)]` is added only when a
-  comment carries one.
+  when it is not. A line explaining `[DELETED: "..."]`, and one explaining
+  `[SPAN: N lines]`, is added only when a comment carries that marker.
 - A `## path` section per file, its comments in line order.
 - Per comment, `Line N:` / `Lines N-M:` (the tag lines), then the tag lines
-  verbatim with up to 5 lines of the file either side (§5.3's window), fenced
+  verbatim with up to 5 lines of the file either side (§5.3's window), below
+  reaching a span's last line when that is further, fenced
   with the file's extension as the language. The fence is longer than any
   backtick run in the block, so no file content can close it.
 

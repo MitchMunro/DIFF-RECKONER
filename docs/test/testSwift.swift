@@ -5,6 +5,9 @@
 
 import SwiftUI
 import Combine
+import OSLog
+
+private let logger = Logger(subsystem: "com.example.tasks", category: "TaskStore")
 
 /// How urgent a task is. Raw values persist to disk.
 enum Priority: Int, Codable, CaseIterable, Identifiable {
@@ -39,9 +42,10 @@ struct TaskItem: Identifiable, Codable, Hashable {
     var dueDate: Date?
     var isDone: Bool = false
 
-    init(title: String, priority: Priority = .medium, dueDate: Date? = nil) {
+    init(title: String, notes: String? = nil, priority: Priority = .medium, dueDate: Date? = nil) {
         self.id = UUID()
         self.title = title
+        self.notes = notes
         self.priority = priority
         self.dueDate = dueDate
     }
@@ -87,8 +91,13 @@ final class TaskStore: ObservableObject {
             .filter { filter == nil || $0.priority == filter }
             .sorted { lhs, rhs in
                 if lhs.isDone != rhs.isDone { return !lhs.isDone }
-                return lhs.priority.rawValue > rhs.priority.rawValue
+                if lhs.priority != rhs.priority { return lhs.priority.rawValue > rhs.priority.rawValue }
+                return (lhs.dueDate ?? .distantFuture) < (rhs.dueDate ?? .distantFuture)
             }
+    }
+
+    var overdueCount: Int {
+        tasks.filter(\.isOverdue).count
     }
 
     func add(_ title: String, priority: Priority) throws {
@@ -100,6 +109,13 @@ final class TaskStore: ObservableObject {
     func toggle(_ task: TaskItem) {
         guard let index = tasks.firstIndex(where: { $0.id == task.id }) else { return }
         tasks[index].isDone.toggle()
+    }
+
+    func rename(_ task: TaskItem, to title: String) throws {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw TaskStoreError.emptyTitle }
+        guard let index = tasks.firstIndex(where: { $0.id == task.id }) else { return }
+        tasks[index].title = trimmed
     }
 
     func delete(at offsets: IndexSet) {
@@ -123,7 +139,7 @@ final class TaskStore: ObservableObject {
             let data = try JSONEncoder().encode(tasks)
             try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
         } catch {
-            print("Save failed: \(error)")
+            logger.error("Save failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 }
@@ -146,11 +162,22 @@ struct TaskListView: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section("\(store.visibleTasks.count) tasks") {
+                Section {
                     ForEach(store.visibleTasks) { task in
                         TaskRow(task: task) { store.toggle(task) }
+                            .swipeActions(edge: .leading) {
+                                Button(task.isDone ? "Undo" : "Done") { store.toggle(task) }
+                                    .tint(.blue)
+                            }
                     }
                     .onDelete(perform: store.delete)
+                } header: {
+                    Text("\(store.visibleTasks.count) tasks")
+                } footer: {
+                    if store.overdueCount > 0 {
+                        Text("\(store.overdueCount) overdue")
+                            .foregroundStyle(.red)
+                    }
                 }
             }
             .navigationTitle("Tasks")
@@ -164,13 +191,20 @@ struct TaskListView: View {
                     }
                 }
             }
-            .alert("Oops", isPresented: .constant(errorMessage != nil)) {
-                Button("OK") { errorMessage = nil }
+            .alert("Oops", isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
             } message: {
                 Text(errorMessage ?? "")
             }
             .task {
-                try? await store.load()
+                do {
+                    try await store.load()
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -197,14 +231,20 @@ private struct TaskRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(task.title)
                     .strikethrough(task.isDone)
+                if let notes = task.notes, !notes.isEmpty {
+                    Text(notes)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 if let due = task.dueDate {
                     Text(due, style: .relative)
                         .font(.caption)
                         .foregroundStyle(task.isOverdue ? .red : .secondary)
                 }
             }
-            Spacer()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .opacity(task.isDone ? 0.5 : 1.0)
         .accessibilityElement(children: .combine)
     }

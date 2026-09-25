@@ -42,7 +42,8 @@ fn fence_for(body: &str) -> String {
     "`".repeat(longest.max(2) + 1)
 }
 
-/// What the agent is asked to do. The `[DELETED]` line shows only when a comment carries one.
+/// What the agent is asked to do. The `[DELETED]` and `[SPAN]` lines show only when a comment
+/// carries that marker.
 fn preamble(comments: &[&Comment]) -> String {
     let mut out = match comments.len() {
         1 => format!(
@@ -56,7 +57,13 @@ fn preamble(comments: &[&Comment]) -> String {
         ),
     };
     if comments.iter().any(|c| c.deleted.is_some()) {
-        out.push_str("\n`[DELETED: (...)]` quotes the start of a removed line.");
+        out.push_str("\n`[DELETED: \"...\"]` quotes the start of a removed line.");
+    }
+    if comments.iter().any(|c| c.span > 1) {
+        out.push_str(
+            "\n`[SPAN: N lines]` means the comment covers N lines: those below it, or the N removed \
+             lines starting at the quoted one.",
+        );
     }
     out
 }
@@ -274,12 +281,23 @@ mod tests {
 
     #[test]
     fn one_comment_reads_in_the_singular_and_a_deleted_one_adds_its_note() {
-        let c = parsed("a.rs", "// [- REVIEW -] [DELETED: (cleanup();)] still needed\nfinish();\n");
+        let c =
+            parsed("a.rs", "// [- REVIEW -] [DELETED: \"cleanup();\"] still needed\nfinish();\n");
         let out = format_all(&[&c[0]]);
         assert!(out.starts_with("Address the review comment below."), "{out}");
         assert!(out.contains("Once you've addressed it, delete its lines."), "{out}");
-        assert!(out.contains("\n`[DELETED: (...)]` quotes the start of a removed line.\n\n"));
-        assert!(out.contains("// [- REVIEW -] [DELETED: (cleanup();)] still needed\n"), "{out}");
+        assert!(out.contains("\n`[DELETED: \"...\"]` quotes the start of a removed line.\n\n"));
+        assert!(out.contains("// [- REVIEW -] [DELETED: \"cleanup();\"] still needed\n"), "{out}");
+        assert!(!out.contains("[SPAN: N lines]"), "no span, no note about one");
+    }
+
+    #[test]
+    fn a_spanning_comment_adds_its_note_and_shows_every_covered_line() {
+        let below = (1..=7).map(|n| format!("l{n}\n")).collect::<Vec<_>>().concat();
+        let c = parsed("a.rs", &format!("// [- REVIEW -] [SPAN: 7 lines] all of these\n{below}"));
+        let out = format_all(&[&c[0]]);
+        assert!(out.contains("\n`[SPAN: N lines]` means the comment covers N lines"), "{out}");
+        assert!(out.contains("l7\n"), "the window reaches the span's last line:\n{out}");
     }
 
     #[test]

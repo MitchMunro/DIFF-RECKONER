@@ -17,11 +17,14 @@ pub const TAG: &str = "[- REVIEW -]";
 /// Lines of the file a comment carries from each side of its tag lines (§5.3).
 pub const CONTEXT_LINES: usize = 5;
 
-/// How many characters of a removed line a `[DELETED: (...)]` marker keeps.
-const DELETED_LEN: usize = 16;
+/// How many characters of a removed line a `[DELETED: "..."]` marker keeps before it
+/// truncates with [`ELLIPSIS`].
+const DELETED_LEN: usize = 30;
+const ELLIPSIS: &str = "...";
 
-const DELETED_OPEN: &str = "[DELETED: (";
-const DELETED_CLOSE: &str = ")]";
+const DELETED_OPEN: &str = "[DELETED: \"";
+const DELETED_CLOSE: &str = "\"]";
+const SPAN_OPEN: &str = "[SPAN: ";
 
 /// Extensions whose language has no line comment, where a written comment would break the
 /// file (§3.4).
@@ -103,11 +106,29 @@ pub struct Placement {
     pub expect: Option<String>,
     /// The removed line a comment on a deletion carries (§3.3).
     pub deleted: Option<String>,
+    /// How many lines the comment covers: surviving lines from `before` down, or removed
+    /// lines for a comment on a deletion. Written as `[SPAN: N lines]` when more than one.
+    pub span: u32,
 }
 
-/// The first [`DELETED_LEN`] characters of a removed line, its indentation dropped.
+/// A removed line's snippet, its indentation dropped: the whole line up to [`DELETED_LEN`]
+/// characters, else that many and [`ELLIPSIS`].
 pub fn deleted_snippet(line: &str) -> String {
-    line.trim_start().chars().take(DELETED_LEN).collect()
+    let line = line.trim_start();
+    let mut out: String = line.chars().take(DELETED_LEN).collect();
+    if out.len() < line.len() {
+        out.push_str(ELLIPSIS);
+    }
+    out
+}
+
+/// The markers that lead a comment's first tag line, each with a trailing space:
+/// `[DELETED: "..."] ` for a comment on a deletion, then `[SPAN: N lines] ` when it covers
+/// more than one line. Empty for a one-line comment on a surviving line.
+pub fn markers(deleted: Option<&str>, span: u32) -> String {
+    let deleted = deleted.map(|d| format!("{DELETED_OPEN}{d}{DELETED_CLOSE} ")).unwrap_or_default();
+    let span = if span > 1 { format!("{SPAN_OPEN}{span} lines] ") } else { String::new() };
+    format!("{deleted}{span}")
 }
 
 /// Every comment in the worktree: the tracked and untracked files `git grep` finds the tag in,
@@ -148,16 +169,21 @@ pub fn parse(path: &str, content: &str) -> Vec<Comment> {
             i += 1;
         }
         let (deleted, head) = split_deleted(body[0]);
+        let (span, head) = split_span(head);
         body[0] = head;
+        // The window below reaches a span's last line; a deletion's span counts removed
+        // lines, which the file no longer holds.
+        let covered = if deleted.is_some() { 1 } else { span };
         out.push(Comment {
             file: path.to_string(),
             start: line_no(start),
             end: line_no(i),
             text: body.join("\n"),
             deleted,
+            span,
             anchor: lines.get(i + 1).map(|l| strip_eol(l).to_string()),
             before: context_above(&lines, start),
-            after: context_below(&lines, i),
+            after: context_below(&lines, i, covered),
             lines: lines[start..=i].iter().map(|l| strip_eol(l).into()).collect(),
         });
         i += 1;
@@ -170,9 +196,9 @@ fn context_above(lines: &[&str], start: usize) -> Vec<String> {
     lines[start.saturating_sub(CONTEXT_LINES)..start].iter().map(|l| strip_eol(l).into()).collect()
 }
 
-/// Up to [`CONTEXT_LINES`] lines below index `end`, verbatim.
-fn context_below(lines: &[&str], end: usize) -> Vec<String> {
-    let to = (end + 1 + CONTEXT_LINES).min(lines.len());
+/// Up to [`CONTEXT_LINES`] lines below index `end`, or `covered` when that is more, verbatim.
+fn context_below(lines: &[&str], end: usize, covered: u32) -> Vec<String> {
+    let to = (end + 1 + CONTEXT_LINES.max(covered as usize)).min(lines.len());
     lines[(end + 1).min(to)..to].iter().map(|l| strip_eol(l).into()).collect()
 }
 
@@ -196,17 +222,19 @@ pub fn add(repo: &Path, path: &str, at: &Placement, text: &str) -> Result<(), Wr
     if touches(at_index.checked_sub(1)) || touches(Some(at_index)) {
         return Err(WriteError::Merges);
     }
-    let updated = insert(&content, prefix, at.before, text, at.deleted.as_deref());
+    let lead = markers(at.deleted.as_deref(), at.span);
+    let updated = insert(&content, prefix, at.before, text, &lead);
     write_text(repo, path, &updated)
 }
 
-/// Replace comment `c`'s text in place, keeping its `[DELETED: (...)]` marker.
+/// Replace comment `c`'s text in place, keeping its [`markers`].
 pub fn rewrite(repo: &Path, c: &Comment, text: &str) -> Result<(), WriteError> {
     let prefix = read_prefix(&c.file);
     let content = read_text(repo, &c.file)?;
     let c = locate(&content, c)?;
     let removed = remove(&content, c.start, c.end);
-    let updated = insert(&removed, prefix, c.start, text, c.deleted.as_deref());
+    let lead = markers(c.deleted.as_deref(), c.span);
+    let updated = insert(&removed, prefix, c.start, text, &lead);
     write_text(repo, &c.file, &updated)
 }
 
@@ -223,8 +251,9 @@ pub fn reparse(repo: &Path, path: &str) -> Vec<Comment> {
 }
 
 /// `content` with `text` written as tag lines directly above line `before`, indented like
-/// that line. Blank text lines keep their tag, so the comment stays one run.
-fn insert(content: &str, prefix: &str, before: u32, text: &str, deleted: Option<&str>) -> String {
+/// that line, the first led by `lead`, its [`markers`]. Blank text lines keep their tag, so
+/// the comment stays one run.
+fn insert(content: &str, prefix: &str, before: u32, text: &str, lead: &str) -> String {
     let lines: Vec<&str> = content.split_inclusive('\n').collect();
     let eol = if content.contains("\r\n") { "\r\n" } else { "\n" };
     let at = index(before).min(lines.len());
@@ -237,10 +266,7 @@ fn insert(content: &str, prefix: &str, before: u32, text: &str, deleted: Option<
         .enumerate()
         .map(|(i, line)| {
             let line = line.trim_end();
-            let body = match deleted.filter(|_| i == 0) {
-                Some(d) => format!("{DELETED_OPEN}{d}{DELETED_CLOSE} {line}"),
-                None => line.to_string(),
-            };
+            let body = if i == 0 { format!("{lead}{line}") } else { line.to_string() };
             let body = body.trim_end();
             let lead = if prefix.is_empty() { String::new() } else { format!("{prefix} ") };
             if body.is_empty() {
@@ -299,18 +325,42 @@ fn tag_body<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
     Some(rest.strip_prefix(' ').unwrap_or(rest).trim_end())
 }
 
-/// A first tag line's `[DELETED: (...)]` marker and the text after it. The snippet may itself
-/// hold `)]`, so a close exactly [`DELETED_LEN`] characters in wins over an earlier one.
+/// A first tag line's `[DELETED: "..."]` marker and the text after it. The snippet may itself
+/// hold `"]`, so the close is the one a truncated snippet ends on, else the first followed by
+/// a space or the line's end, else the first.
 fn split_deleted(body: &str) -> (Option<String>, &str) {
     let Some(rest) = body.strip_prefix(DELETED_OPEN) else { return (None, body) };
     let closes: Vec<usize> = rest.match_indices(DELETED_CLOSE).map(|(i, _)| i).collect();
-    let Some(&close) =
-        closes.iter().find(|&&i| rest[..i].chars().count() == DELETED_LEN).or(closes.first())
-    else {
-        return (None, body);
+    let bounded = |i: &&usize| {
+        let after = &rest[**i + DELETED_CLOSE.len()..];
+        after.is_empty() || after.starts_with(' ')
     };
+    let truncated = |i: &&usize| {
+        let inner = &rest[..**i];
+        inner.ends_with(ELLIPSIS) && inner.chars().count() == DELETED_LEN + ELLIPSIS.len()
+    };
+    let close = closes
+        .iter()
+        .find(|i| truncated(i) && bounded(i))
+        .or_else(|| closes.iter().find(bounded))
+        .or(closes.first());
+    let Some(&close) = close else { return (None, body) };
     let after = &rest[close + DELETED_CLOSE.len()..];
     (Some(rest[..close].to_string()), after.strip_prefix(' ').unwrap_or(after))
+}
+
+/// A `[SPAN: N lines]` marker's count and the text after it; 1 and all of `body` without one.
+fn split_span(body: &str) -> (u32, &str) {
+    let parsed = body.strip_prefix(SPAN_OPEN).and_then(|rest| {
+        let (inner, after) = rest.split_once(']')?;
+        let (n, unit) = inner.split_once(' ')?;
+        let n = n.parse::<u32>().ok().filter(|&n| n > 0)?;
+        matches!(unit, "line" | "lines").then_some((n, after))
+    });
+    match parsed {
+        Some((n, after)) => (n, after.strip_prefix(' ').unwrap_or(after)),
+        None => (1, body),
+    }
 }
 
 /// Where `c` sits in `content` now: exactly where it was parsed, else the one comment with its
@@ -368,7 +418,7 @@ fn line_no(index: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{TAG, deleted_snippet, insert, line_prefix, parse, remove, split_deleted};
+    use super::{TAG, deleted_snippet, insert, line_prefix, markers, parse, remove, split_deleted};
 
     fn tagged(prefix: &str, text: &str) -> String {
         format!("{prefix} {TAG} {text}")
@@ -436,7 +486,7 @@ mod tests {
         for content in ["a\n  b\nc\n", "a\r\nb\r\n", "a\nb", "", "only"] {
             let lines = content.split_inclusive('\n').count() as u32;
             for before in 1..=lines + 1 {
-                let written = insert(content, "#", before, "one\n\ntwo", None);
+                let written = insert(content, "#", before, "one\n\ntwo", "");
                 let found = parse("x.py", &written);
                 assert_eq!(found.len(), 1, "{content:?} @ {before}: {written:?}");
                 assert_eq!(found[0].text, "one\n\ntwo");
@@ -447,7 +497,7 @@ mod tests {
 
     #[test]
     fn a_prose_file_takes_the_tag_bare() {
-        let written = insert("# Title\n\nSome prose.\n", "", 3, "reword this", None);
+        let written = insert("# Title\n\nSome prose.\n", "", 3, "reword this", "");
         assert_eq!(written, format!("# Title\n\n{TAG} reword this\nSome prose.\n"));
         let found = parse("README.md", &written);
         assert_eq!((found[0].start, found[0].text.as_str()), (3, "reword this"));
@@ -457,22 +507,46 @@ mod tests {
 
     #[test]
     fn insert_matches_the_anchor_indent_and_line_ending() {
-        let written = insert("fn a() {\r\n\tx();\r\n}\r\n", "//", 2, "why", None);
+        let written = insert("fn a() {\r\n\tx();\r\n}\r\n", "//", 2, "why", "");
         assert_eq!(written, format!("fn a() {{\r\n\t// {TAG} why\r\n\tx();\r\n}}\r\n"));
     }
 
     #[test]
-    fn deleted_marker_round_trips_and_prefers_a_full_length_snippet() {
-        let snippet = deleted_snippet("    let ok = validate_token(t)?;");
-        assert_eq!(snippet, "let ok = validat");
-        let written = insert("a\n", "//", 1, "load-bearing\nmore", Some(&snippet));
+    fn deleted_marker_round_trips_and_prefers_a_bounded_close() {
+        let snippet = deleted_snippet("    let ok = validate_token(t)?.expect(\"x\");");
+        assert_eq!(snippet, "let ok = validate_token(t)?.ex...");
+        assert_eq!(deleted_snippet("  short();"), "short();", "a short line takes no ellipsis");
+        let written = insert("a\n", "//", 1, "load-bearing\nmore", &markers(Some(&snippet), 1));
         let c = &parse("a.rs", &written)[0];
-        assert_eq!(c.deleted.as_deref(), Some("let ok = validat"));
-        assert_eq!(c.text, "load-bearing\nmore");
-        // A snippet holding the close keeps it when the full-length close follows.
-        let (d, rest) = split_deleted("[DELETED: (x[f(a)] + g(b) -)] note");
-        assert_eq!((d.as_deref(), rest), (Some("x[f(a)] + g(b) -"), "note"));
-        let (d, rest) = split_deleted("[DELETED: (x)] y)] z");
-        assert_eq!((d.as_deref(), rest), (Some("x"), "y)] z"));
+        assert_eq!(c.deleted.as_deref(), Some("let ok = validate_token(t)?.ex..."));
+        assert_eq!((c.text.as_str(), c.span), ("load-bearing\nmore", 1));
+        // A snippet holding the close keeps it: the real close is followed by a space.
+        let (d, rest) = split_deleted("[DELETED: \"x[\"a\"]\"] note");
+        assert_eq!((d.as_deref(), rest), (Some("x[\"a\"]"), "note"));
+        let (d, rest) = split_deleted("[DELETED: \"x\"] y\"] z");
+        assert_eq!((d.as_deref(), rest), (Some("x"), "y\"] z"));
+    }
+
+    #[test]
+    fn span_marker_round_trips_after_the_deleted_marker() {
+        let written = insert("a\nb\n", "//", 1, "both", &markers(Some("gone();"), 3));
+        assert_eq!(
+            written,
+            format!("// {TAG} [DELETED: \"gone();\"] [SPAN: 3 lines] both\na\nb\n")
+        );
+        let c = &parse("a.rs", &written)[0];
+        assert_eq!((c.deleted.as_deref(), c.span, c.text.as_str()), (Some("gone();"), 3, "both"));
+        let c = &parse("a.rs", &format!("// {TAG} [SPAN: 2 lines] pair\na\nb\n"))[0];
+        assert_eq!((c.deleted.as_deref(), c.span, c.text.as_str()), (None, 2, "pair"));
+        assert_eq!(markers(None, 1), "", "one line takes no marker");
+        let c = &parse("a.rs", &format!("// {TAG} [SPAN: many] x\na\n"))[0];
+        assert_eq!((c.span, c.text.as_str()), (1, "[SPAN: many] x"), "a malformed span is text");
+    }
+
+    #[test]
+    fn a_spans_context_reaches_its_last_line() {
+        let below = (1..=8).map(|n| format!("b{n}\n")).collect::<Vec<_>>().concat();
+        let c = &parse("x.py", &format!("# {TAG} [SPAN: 7 lines] all of it\n{below}"))[0];
+        assert_eq!(c.after.len(), 7);
     }
 }

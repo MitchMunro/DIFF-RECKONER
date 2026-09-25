@@ -1,20 +1,23 @@
 package com.example.tasks.ui
 
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
@@ -22,8 +25,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-private const val TAG = "TaskActivity"
-
+// [- REVIEW -] [SPAN: 6 lines] fasdfaf
 /** How urgent a task is. Ordinals persist to disk, so append only. */
 enum class Priority(val label: String, val tint: Color) {
     LOW("Low", Color(0xFF2E7D32)),
@@ -31,9 +33,11 @@ enum class Priority(val label: String, val tint: Color) {
     HIGH("High", Color(0xFFC62828)),
 }
 
+// [- REVIEW -] [SPAN: 8 lines] comment
 data class Task(
     val id: String = UUID.randomUUID().toString(),
     val title: String,
+    val notes: String? = null,
     val priority: Priority = Priority.MEDIUM,
     val dueAtMillis: Long? = null,
     val isDone: Boolean = false,
@@ -44,7 +48,9 @@ data class Task(
 
 sealed interface TasksUiState {
     data object Loading : TasksUiState
-    data class Ready(val tasks: List<Task>, val filter: Priority?) : TasksUiState
+    data class Ready(val tasks: List<Task>, val filter: Priority?) : TasksUiState {
+        val overdueCount: Int get() = tasks.count { it.isOverdue }
+    }
     data class Error(val message: String) : TasksUiState
 }
 
@@ -65,10 +71,12 @@ class InMemoryTaskRepository : TaskRepository {
     }
 
     override suspend fun delete(id: String) {
+        delay(50)
         tasks.update { it - id }
     }
 }
 
+// [- REVIEW -] [SPAN: 41 lines] multi line comment here
 class TasksViewModel(
     private val repository: TaskRepository = InMemoryTaskRepository(),
 ) : ViewModel() {
@@ -78,7 +86,11 @@ class TasksViewModel(
         combine(repository.observe(), filter) { tasks, filter ->
             val visible = tasks
                 .filter { filter == null || it.priority == filter }
-                .sortedWith(compareBy<Task> { it.isDone }.thenByDescending { it.priority.ordinal })
+                .sortedWith(
+                    compareBy<Task> { it.isDone }
+                        .thenByDescending { it.priority.ordinal }
+                        .thenBy { it.dueAtMillis ?: Long.MAX_VALUE },
+                )
             TasksUiState.Ready(visible, filter) as TasksUiState
         }
             .catch { e -> emit(TasksUiState.Error(e.message ?: "Unknown error")) }
@@ -94,6 +106,12 @@ class TasksViewModel(
         repository.upsert(task.copy(isDone = !task.isDone))
     }
 
+    fun rename(task: Task, title: String) {
+        val trimmed = title.trim()
+        require(trimmed.isNotEmpty()) { "A task needs a title." }
+        viewModelScope.launch { repository.upsert(task.copy(title = trimmed)) }
+    }
+
     fun delete(task: Task) = viewModelScope.launch { repository.delete(task.id) }
 
     fun setFilter(priority: Priority?) {
@@ -101,15 +119,15 @@ class TasksViewModel(
     }
 }
 
+// [- REVIEW -] a's;dkfja;sdf
 class TaskActivity : ComponentActivity() {
     private val viewModel: TasksViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.d(TAG, "onCreate, restored=${savedInstanceState != null}")
         setContent {
             MaterialTheme {
-                val state by viewModel.uiState.collectAsState()
+                val state by viewModel.uiState.collectAsStateWithLifecycle()
                 TaskScreen(
                     state = state,
                     onAdd = viewModel::add,
@@ -124,6 +142,7 @@ class TaskActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+// [- REVIEW -] Multi line comment here
 fun TaskScreen(
     state: TasksUiState,
     onAdd: (String, Priority) -> Unit,
@@ -139,9 +158,14 @@ fun TaskScreen(
         Column(Modifier.padding(padding).padding(16.dp)) {
             OutlinedTextField(
                 value = title,
-                onValueChange = { title = it },
+                onValueChange = {
+                    title = it
+                    error = null
+                },
                 label = { Text("What needs doing?") },
                 isError = error != null,
+                supportingText = error?.let { { Text(it) } },
+                singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -168,7 +192,16 @@ fun TaskScreen(
                 is TasksUiState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
                 is TasksUiState.Error -> Text(state.message, color = MaterialTheme.colorScheme.error)
                 is TasksUiState.Ready -> {
-                    Text("${state.tasks.size} tasks", style = MaterialTheme.typography.labelLarge)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("${state.tasks.size} tasks", style = MaterialTheme.typography.labelLarge)
+                        if (state.overdueCount > 0) {
+                            Text(
+                                "${state.overdueCount} overdue",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         items(state.tasks, key = { it.id }) { task ->
                             TaskRow(task, onToggle = { onToggle(task) }, onDelete = { onDelete(task) })
@@ -187,12 +220,23 @@ private fun TaskRow(task: Task, onToggle: () -> Unit, onDelete: () -> Unit) {
         modifier = Modifier.fillMaxWidth(),
     ) {
         Checkbox(checked = task.isDone, onCheckedChange = { onToggle() })
-        Text(
-            text = task.title,
-            color = if (task.isOverdue) Color.Red else task.priority.tint,
-            textDecoration = if (task.isDone) TextDecoration.LineThrough else null,
-            modifier = Modifier.weight(1f),
-        )
-        IconButton(onClick = onDelete) { Text("✕") }
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = task.title,
+                color = if (task.isOverdue) MaterialTheme.colorScheme.error else task.priority.tint,
+                textDecoration = if (task.isDone) TextDecoration.LineThrough else null,
+            )
+            task.notes?.takeIf { it.isNotBlank() }?.let { notes ->
+                Text(
+                    text = notes,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        IconButton(onClick = onDelete) {
+            Icon(Icons.Default.Delete, contentDescription = "Delete ${task.title}")
+        }
     }
 }

@@ -311,6 +311,7 @@ mod tests {
             end: line,
             text: text.into(),
             deleted: None,
+            span: 1,
             anchor: Some("x".into()),
             before: Vec::new(),
             after: Vec::new(),

@@ -314,6 +314,7 @@ fn hunk_steps_walk_the_changeset_and_pass_over_hunkless_files() {
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
 }
 
+// [- REVIEW -] [SPAN: 98 lines] biiiiig comment
 #[test]
 fn an_armed_crossing_takes_the_footer_and_dies_on_any_other_input() {
     let r = traversal_repo();
@@ -1423,7 +1424,7 @@ fn comments_on_added_and_removed_lines_are_written_into_the_file() {
     comment_on_line(&mut app, '+', "epsilon", "this addition needs a test");
     comment_on_line(&mut app, '-', "beta", "why was this dropped?");
     assert_eq!(app.store.len(), 2);
-    let deleted = tag_line("[DELETED: (beta)] why was this dropped?");
+    let deleted = tag_line("[DELETED: \"beta\"] why was this dropped?");
     assert_eq!(
         r.read("a.rs"),
         format!(
@@ -1435,6 +1436,29 @@ fn comments_on_added_and_removed_lines_are_written_into_the_file() {
     // The tag lines are ordinary insertions in the reloaded diff.
     let inserted = app.visible.iter().filter(|row| row.marker() == '+').count();
     assert_eq!(inserted, 4, "BETA, epsilon, and one tag line each");
+}
+
+#[test]
+fn an_enter_selection_writes_its_span_and_titles_the_box_with_it() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    let keymap = Keymap::default();
+    app.focus = Focus::Diff;
+    app.diff_cursor = app.visible.iter().position(|r| r.text() == "alpha").unwrap();
+    press(&mut app, &keymap, KeyCode::Enter);
+    let gamma = app.visible.iter().position(|r| r.text() == "gamma").unwrap();
+    app.diff_cursor = gamma;
+    app.start_comment();
+    // alpha, BETA, gamma survive; the removed `beta` between them is not counted.
+    assert_eq!(app.pending_target().as_deref(), Some("ln: 1 - 3"));
+    typed(&mut app, "all three");
+    app.submit_comment();
+    assert_eq!(
+        r.read("a.rs"),
+        format!("{}\nalpha\nBETA\ngamma\ndelta\nepsilon\n", tag_line("[SPAN: 3 lines] all three"))
+    );
+    let c = app.store.get(0).unwrap();
+    assert_eq!((c.span, c.text.as_str(), c.target_label().as_str()), (3, "all three", "ln: 2 - 4"));
 }
 
 #[test]
@@ -1519,7 +1543,7 @@ fn an_export_never_consumes_comments() {
     let sent = target.last();
     assert!(sent.starts_with("Address the 2 review comments below."), "{sent}");
     assert!(
-        sent.contains("Line 2:\n```rs\nalpha\n// [- REVIEW -] [DELETED: (beta)] two\nBETA\n"),
+        sent.contains("Line 2:\n```rs\nalpha\n// [- REVIEW -] [DELETED: \"beta\"] two\nBETA\n"),
         "the tag lines in their context, fenced: {sent}"
     );
     assert!(sent.contains("\n\nLine 6:\n```rs\n"), "one block per comment: {sent}");
@@ -3180,7 +3204,10 @@ fn enter_focuses_the_diff_and_esc_returns_to_the_navigator() {
     press(&mut app, &keymap, KeyCode::Enter);
     assert_eq!(app.focus, Focus::Diff, "`enter` moves into the diff");
     press(&mut app, &keymap, KeyCode::Enter);
-    assert_eq!((app.focus, app.composing()), (Focus::Diff, false), "off a comment it is inert");
+    assert_eq!((app.focus, app.composing()), (Focus::Diff, false), "off a comment it opens none");
+    assert!(app.select_anchor.is_some(), "it starts a selection instead");
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert!(app.select_anchor.is_none(), "and a second press drops it");
 
     // `esc` peels the footer expansion before it leaves the diff.
     app.keys_expanded = true;
@@ -6307,7 +6334,7 @@ fn a_comment_on_the_last_removed_lines_goes_at_the_end_of_the_file() {
     comment_on_line(&mut app, '-', "epsilon", "why drop it?");
     assert_eq!(
         r.read("a.rs"),
-        format!("alpha\nBETA\ngamma\ndelta\n{}\n", tag_line("[DELETED: (epsilon)] why drop it?"))
+        format!("alpha\nBETA\ngamma\ndelta\n{}\n", tag_line("[DELETED: \"epsilon\"] why drop it?"))
     );
     let c = app.store.get(0).unwrap();
     assert_eq!((c.start, c.anchor.as_deref()), (5, None), "nothing survives below it");

@@ -705,7 +705,7 @@ fn the_footer_shows_the_action_for_the_context() {
     on_changed_line(&mut app);
     let footer = footer_line(&render(&app));
     assert!(footer.contains("c comment"), "a diff line offers comment:\n{footer}");
-    assert!(footer.contains("v select"), "and selecting a range:\n{footer}");
+    assert!(footer.contains("enter select"), "and selecting a range:\n{footer}");
     assert!(!footer.contains("changed"), "the changed count is not in the footer:\n{footer}");
 }
 
@@ -718,11 +718,11 @@ fn ends_with_hint(row: &str) -> bool {
 #[test]
 fn the_footer_trims_trailing_actions_to_fit_keeping_the_primary_and_the_more_hint() {
     let (_repo, mut app) = edited_app();
-    on_changed_line(&mut app); // diff focus, content line → c comment · v select … ?
+    on_changed_line(&mut app); // diff focus, content line → c comment · enter select … ?
     // Wide: every cursor action fits, and the `?` closes the row.
     let wide = footer_line(&render_at(&app, 120));
     assert!(
-        wide.contains("c comment") && wide.contains("v select") && ends_with_hint(&wide),
+        wide.contains("c comment") && wide.contains("enter select") && ends_with_hint(&wide),
         "wide footer shows all actions and the `?`:\n{wide}"
     );
     assert!(wide.trim_end().ends_with("? shortcuts"), "with room, the `?` is labeled:\n{wide}");
@@ -730,7 +730,10 @@ fn the_footer_trims_trailing_actions_to_fit_keeping_the_primary_and_the_more_hin
     let narrow = footer_line(&render_at(&app, 18));
     assert!(narrow.contains("c comment"), "the primary action is never dropped:\n{narrow}");
     assert!(ends_with_hint(&narrow), "the `?` never drops:\n{narrow}");
-    assert!(!narrow.contains("v select"), "the trailing action is trimmed off row 1:\n{narrow}");
+    assert!(
+        !narrow.contains("enter select"),
+        "the trailing action is trimmed off row 1:\n{narrow}"
+    );
     // Too narrow for the primary and the `?` together: the primary sheds its label to its key, and
     // the `?` still survives at the right.
     let tiny = footer_line(&render_at(&app, 11));
@@ -1220,8 +1223,8 @@ fn the_comments_tab_leads_a_deleted_line_comment_with_its_marker() {
     app.set_tab(Tab::Comments).unwrap();
 
     let out = render(&app);
-    assert!(out.contains("2  [DELETED: (beta)] look here"), "the navigator row:\n{out}");
-    assert!(out.contains("REVIEW · on deleted: beta"), "the card's box title:\n{out}");
+    assert!(out.contains("2  [DELETED: \"beta\"] look here"), "the navigator row:\n{out}");
+    assert!(out.contains("REVIEW ─ deleted: \"beta\""), "the card's box title:\n{out}");
 }
 
 #[test]

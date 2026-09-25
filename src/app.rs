@@ -2804,6 +2804,9 @@ impl App {
             self.toggle_fold();
         } else if self.comment_claims_edit() {
             self.edit_comment();
+        } else if self.tab.is_file_tab() {
+            // Any other diff line starts a selection, and a second press drops it.
+            self.toggle_select();
         }
     }
 
@@ -3221,9 +3224,10 @@ impl App {
     }
 
     /// The file and placement a comment on the current selection writes to, or the status line
-    /// saying why it cannot. A selection with a surviving line goes above its first one; one
-    /// of only removed lines goes above the next surviving line and carries the first removed
-    /// line (§3.3).
+    /// saying why it cannot. A selection with a surviving line goes above its first one and
+    /// spans to its last; one of only removed lines goes above the next surviving line,
+    /// carries the first removed line (§3.3), and spans the removed lines. A selection mixing
+    /// the two spans its surviving lines only.
     fn placement(&self) -> Result<(String, Placement), String> {
         let file = self.diff_path.clone().ok_or_else(|| "no file open".to_string())?;
         if !self.shows_worktree_lines() {
@@ -3241,20 +3245,22 @@ impl App {
         let selected = self.visible.get(lo..=hi).unwrap_or_default();
         let at = |row: &Row| row.new_no().map(|n| (n, row.text()));
         if let Some((before, text)) = selected.iter().find_map(at) {
-            return Ok((file, Placement { before, expect: Some(text), deleted: None }));
+            // A selection crosses no collapsed fold, so its surviving lines run unbroken.
+            let last = selected.iter().rev().find_map(Row::new_no).unwrap_or(before);
+            let span = last - before + 1;
+            return Ok((file, Placement { before, expect: Some(text), deleted: None, span }));
         }
-        let removed = selected
-            .iter()
-            .find(|row| row.old_no().is_some())
-            .ok_or_else(|| "nothing here to comment on".to_string())?;
-        let deleted = Some(review::deleted_snippet(&removed.text()));
+        let removed: Vec<&Row> = selected.iter().filter(|row| row.old_no().is_some()).collect();
+        let first = removed.first().ok_or_else(|| "nothing here to comment on".to_string())?;
+        let deleted = Some(review::deleted_snippet(&first.text()));
+        let span = u32::try_from(removed.len()).unwrap_or(u32::MAX);
         let after = self.visible[hi + 1..].iter().flat_map(Row::lines).find_map(at);
         let placement = if let Some((before, text)) = after {
-            Placement { before, expect: Some(text), deleted }
+            Placement { before, expect: Some(text), deleted, span }
         } else {
             // Nothing survives below: the end of the file.
             let last = self.visible.iter().flat_map(Row::lines).filter_map(Row::new_no).max();
-            Placement { before: last.unwrap_or(0) + 1, expect: None, deleted }
+            Placement { before: last.unwrap_or(0) + 1, expect: None, deleted, span }
         };
         Ok((file, placement))
     }
@@ -3711,6 +3717,19 @@ impl App {
             | Mode::Find
             | Mode::ThemePick
             | Mode::ConfirmDelete { .. } => None,
+        }
+    }
+
+    /// What the open comment box covers, for its title: the comment being edited, else the
+    /// selection a new one would be written on.
+    pub fn pending_target(&self) -> Option<String> {
+        match &self.mode {
+            Mode::Composing { editing: Some(c) } => Some(c.target_label()),
+            Mode::Composing { editing: None } => {
+                let (_, at) = self.placement().ok()?;
+                Some(crate::model::target_label(at.before, at.span, at.deleted.as_deref()))
+            }
+            _ => None,
         }
     }
 
@@ -5104,6 +5123,7 @@ mod tests {
             end: line,
             text: text.into(),
             deleted: None,
+            span: 1,
             anchor: None,
             before: Vec::new(),
             after: Vec::new(),
@@ -5369,13 +5389,15 @@ mod tests {
         assert!(app.select_anchor.is_some(), "v starts a selection on a commented line");
 
         app.start_edit();
+        assert!(app.editor_request.is_none());
+        assert!(app.select_anchor.is_some(), "the range survives the press");
         app.activate();
         assert!(!app.composing(), "the comment must not open either");
-        assert!(app.editor_request.is_none());
-        assert!(app.select_anchor.is_some(), "and the range survives the press");
+        assert!(app.select_anchor.is_none(), "enter drops the selection instead");
 
         // The freeze is the diff's. The Comments tab owns its own screen, so `activate` still
         // opens the selected card's comment there.
+        app.toggle_select();
         app.tab = Tab::Comments;
         app.activate();
         assert!(app.composing(), "the card edits its comment under the diff's live range");
