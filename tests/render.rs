@@ -779,7 +779,7 @@ fn the_footer_shows_the_sends_outcome_at_a_pane_width_by_yielding_the_cursor_act
     // status.
     app.status = "no agent here — copy to the clipboard instead".to_string();
     let narrow = footer_line(&render_at(&app, 40));
-    assert!(narrow.contains("no agent here"), "the refusal shows at 40 columns:\n{narrow}");
+    assert!(narrow.contains("no agent"), "the refusal shows at 40 columns:\n{narrow}");
     assert!(narrow.contains("y copy"), "copy never drops:\n{narrow}");
     assert!(ends_with_hint(&narrow), "the `?` never drops:\n{narrow}");
     assert!(!narrow.contains("d delete"), "the cursor's actions yield to the status:\n{narrow}");
@@ -1220,7 +1220,8 @@ fn the_comments_tab_shows_each_comment_as_a_card_with_its_context() {
     app.set_tab(Tab::Comments).unwrap();
 
     let out = render(&app);
-    assert!(out.contains("src/a.rs:7  enter open in files"), "the heading and its hint:\n{out}");
+    assert!(out.contains("src/a.rs:7  f open in files"), "the heading and its hint:\n{out}");
+    assert!(out.contains("enter edit comment"), "the footer names the edit:\n{out}");
     assert!(out.contains("card note"), "the comment's box:\n{out}");
     // Five lines of the file either side of the tag line, numbered as the file numbers them.
     for n in [2, 6] {

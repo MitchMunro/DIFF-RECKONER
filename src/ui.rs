@@ -2671,7 +2671,10 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         // One word for one gesture: `v` marks a range end in the diff and the commit picker alike.
         A::Select | A::CommitAnchor => (hint(K::Select), "select"),
         A::ClearSelection => ("esc".into(), "clear"),
-        A::EditComment => (hint(K::Edit), "edit"),
+        // The Comments tab has the room to name what it edits; a file tab's row 1 does not.
+        A::EditComment => {
+            (hint(K::Activate), if app.tab == Tab::Comments { "edit comment" } else { "edit" })
+        }
         A::EditFile => (hint(K::Edit), "edit file"),
         A::DeleteComment => (hint(K::Delete), "delete"),
         A::OpenInFiles => (hint(K::OpenComment), "open in files"),

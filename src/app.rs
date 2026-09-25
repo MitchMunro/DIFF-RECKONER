@@ -2662,7 +2662,8 @@ impl App {
     }
 
     /// The `esc` ladder in `Normal` mode: peel exactly one layer per press — a live selection,
-    /// then an armed crossing, then the footer expansion.
+    /// then an armed crossing, then the footer expansion, then the diff's focus back to the
+    /// navigator. A hidden navigator stays hidden: `esc` peels, it never adds a pane.
     pub fn escape(&mut self) {
         if self.select_anchor.is_some() {
             self.clear_selection();
@@ -2672,7 +2673,29 @@ impl App {
             self.armed_cross = None;
             return;
         }
-        self.keys_expanded = false;
+        if self.keys_expanded {
+            self.keys_expanded = false;
+            return;
+        }
+        if self.focus == Focus::Diff && !self.navigator_hidden_here() {
+            self.focus = Focus::Files;
+        }
+    }
+
+    /// `activate`: on a file tab's directory row, expand or collapse it; on a file row, focus
+    /// the diff; on the diff, open the comment under the cursor for editing; on the Comments
+    /// tab, open the selected card's. Anywhere else it is inert.
+    pub fn activate(&mut self) {
+        if self.tab.is_file_tab() && self.on_folder() {
+            match self.file_rows.get(self.file_cursor).map(|r| &r.kind) {
+                Some(RowKind::Dir { expanded: true, .. }) => self.collapse_dir(),
+                _ => self.expand_dir(),
+            }
+        } else if self.tab.is_file_tab() && self.focus == Focus::Files {
+            self.toggle_focus();
+        } else if self.comment_claims_edit() {
+            self.edit_comment();
+        }
     }
 
     /// Whether the traversal keys act at all: a live selection holds the cursor still, since a
@@ -3128,17 +3151,12 @@ impl App {
         Ok((file, placement))
     }
 
-    /// `edit`: the comment under the cursor, else the file the cursor names
-    /// One key, resolved by what is actually there.
+    /// `edit`: open the file the cursor names in the editor. Comments open through `activate`.
     pub fn start_edit(&mut self) {
-        if self.comment_claims_edit() {
-            self.edit_comment();
-            return;
-        }
         self.editor_request = self.edit_target();
     }
 
-    /// Whether a comment takes the key here, rather than the file.
+    /// Whether `activate` opens a comment here.
     ///
     /// A comment claims it only where its lines are on screen. With the navigator focused the
     /// diff cursor is off screen, so the file row under the eye wins. A live line selection is
@@ -3154,10 +3172,10 @@ impl App {
         claimed && self.target_comment().is_some()
     }
 
-    /// Whether `edit` opens a file here. The branch [`Self::start_edit`] takes, asked by the
-    /// footer, so the bar and the press cannot disagree.
+    /// Whether `edit` opens a file here, asked by the footer, so the bar and the press cannot
+    /// disagree.
     fn edit_opens_a_file(&self) -> bool {
-        !self.comment_claims_edit() && self.edit_target().is_some()
+        self.edit_target().is_some()
     }
 
     /// The file `edit` opens and the line to open it at, or `None` where the key opens nothing.
@@ -4446,8 +4464,8 @@ impl App {
         let any = !self.store.is_empty();
         let mut out = if any {
             vec![
-                (A::OpenInFiles, Primary),
-                (A::EditComment, Do),
+                (A::EditComment, Primary),
+                (A::OpenInFiles, Do),
                 (A::DeleteComment, Do),
                 (A::Copy, Send),
                 (A::Export, Send),
@@ -5177,25 +5195,25 @@ mod tests {
     }
 
     #[test]
-    fn a_commented_line_keeps_edit_for_its_comment() {
+    fn activate_edits_a_comment_and_edit_opens_its_file() {
         use super::EditTarget;
         let mut app = edit_app();
         app.store.replace_all(vec![comment_at("src/lib.rs", 12, "note")]);
         app.diff_cursor = 2;
-        app.start_edit();
-        assert!(app.composing(), "the comment under the cursor claims the key");
+        app.activate();
+        assert!(app.composing(), "`activate` opens the comment under the cursor");
         assert!(app.editor_request.is_none(), "and no file is requested");
 
-        // One row up carries no comment, so the same key names the file instead.
+        // `edit` names the file even on a commented line.
         app.cancel_comment();
-        app.diff_cursor = 0;
         app.start_edit();
+        assert!(!app.composing(), "`edit` never opens a comment");
+        assert_eq!(app.editor_request, Some(EditTarget { path: "src/lib.rs".into(), line: 12 }));
+
+        // One row up carries no comment, so `activate` has nothing to open.
+        app.diff_cursor = 0;
+        app.activate();
         assert!(!app.composing(), "no comment covers this row");
-        assert_eq!(
-            app.editor_request,
-            Some(EditTarget { path: "src/lib.rs".into(), line: 10 }),
-            "so the same key names the file"
-        );
     }
 
     #[test]
@@ -5229,14 +5247,15 @@ mod tests {
         assert!(app.select_anchor.is_some(), "v starts a selection on a commented line");
 
         app.start_edit();
-        assert!(!app.composing(), "the comment branch must not fire either");
+        app.activate();
+        assert!(!app.composing(), "the comment must not open either");
         assert!(app.editor_request.is_none());
         assert!(app.select_anchor.is_some(), "and the range survives the press");
 
-        // The freeze is the diff's. The Comments tab owns its own screen, so the key still
+        // The freeze is the diff's. The Comments tab owns its own screen, so `activate` still
         // opens the selected card's comment there.
         app.tab = Tab::Comments;
-        app.start_edit();
+        app.activate();
         assert!(app.composing(), "the card edits its comment under the diff's live range");
     }
 

@@ -207,6 +207,21 @@ fn toggling_a_directory_requests_a_reveal() {
     assert!(app.reveal_files, "collapsing a directory requests a reveal (even at the same index)");
 }
 
+#[test]
+fn enter_on_a_directory_toggles_it() {
+    let r = folder_repo();
+    let mut app = app_on(&r);
+    let keymap = Keymap::default();
+    app.focus = Focus::Files;
+    app.file_cursor = app.file_rows.iter().position(|row| row.dir_path() == Some("src")).unwrap();
+    let rows = app.file_rows.len();
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert!(app.file_rows.len() < rows, "`enter` collapses an open directory");
+    assert_eq!(app.focus, Focus::Files, "and stays in the navigator");
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(app.file_rows.len(), rows, "and expands it again");
+}
+
 /// A changeset for the traversal keys: `a.rs` with two hunks, a changed binary file with none,
 /// and `c.rs` with one. Each change is a pure insertion, so a hunk's first changed row carries
 /// the inserted text and the assertions below read as the reviewer's own path through the diff.
@@ -638,10 +653,10 @@ fn opening_a_comment_in_files_surfaces_it_under_collapsed_directories() {
     let commented_line = app.store.get(0).unwrap().start;
     app.select_file(file_row(&app, "root.rs")).unwrap();
 
-    // `All files` opens with `src/` collapsed; `enter` on the card must still reach foo's
+    // `All files` opens with `src/` collapsed; `f` on the card must still reach foo's
     // row and land the cursor on the comment.
     enter_tab(&mut app, Tab::Comments);
-    press(&mut app, &Keymap::default(), KeyCode::Enter);
+    press(&mut app, &Keymap::default(), KeyCode::Char('f'));
     assert_eq!(app.tab, Tab::AllFiles);
     assert_eq!(app.diff_path.as_deref(), Some("src/foo.rs"), "the comment's file opened");
     assert_eq!(app.file_cursor, file_row(&app, "src/foo.rs"), "its row is revealed and selected");
@@ -769,7 +784,7 @@ fn the_footer_offers_edit_file_wherever_the_key_opens_one() {
 
     comment_on(&mut app, '+', "note");
     assert_eq!(primary(&app), FooterAction::EditComment, "a commented line leads with the comment");
-    assert!(!has(&app), "and never advertises the file, since the key edits the comment there");
+    assert!(has(&app), "and still offers the file, since `edit` never takes a comment");
 
     app.focus = Focus::Files;
     assert_eq!(
@@ -843,7 +858,7 @@ fn edit_reaches_a_file_the_changeset_only_calls_deleted() {
 }
 
 #[test]
-fn edit_opens_the_file_under_the_cursor_and_the_comment_when_one_is_there() {
+fn edit_opens_the_file_under_the_cursor_and_enter_the_comment_when_one_is_there() {
     let r = edited_repo();
     let mut app = app_on(&r);
     let keymap = Keymap::default();
@@ -855,10 +870,13 @@ fn edit_opens_the_file_under_the_cursor_and_the_comment_when_one_is_there() {
     assert_eq!(request.path, "a.rs");
     assert!(!app.composing(), "and no comment box opens");
 
-    // The same key on a commented line edits the comment instead.
+    // On a commented line `e` still names the file, and `enter` edits the comment.
     comment_on(&mut app, '+', "note");
     press(&mut app, &keymap, KeyCode::Char('e'));
-    assert!(app.composing(), "the comment under the cursor claims the key");
+    assert!(!app.composing(), "`e` never opens a comment");
+    assert!(app.editor_request.take().is_some(), "it names the file");
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert!(app.composing(), "`enter` opens the comment under the cursor");
     assert!(app.editor_request.is_none(), "so no file is requested");
     app.cancel_comment();
 
@@ -880,8 +898,8 @@ fn edit_opens_the_file_under_the_cursor_and_the_comment_when_one_is_there() {
     assert_eq!(in_file_view.line, 3, "at the line the cursor is on, not the file's start");
 
     comment_on(&mut app, ' ', "content note");
-    press(&mut app, &keymap, KeyCode::Char('e'));
-    assert!(app.composing(), "and a content comment claims the key the same way");
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert!(app.composing(), "and `enter` opens a content comment the same way");
     assert!(app.editor_request.is_none());
 }
 
@@ -990,7 +1008,7 @@ fn the_expansion_toggles_from_normal_and_survives_a_poll() {
 }
 
 #[test]
-fn the_comments_tab_bar_leads_with_opening_the_selected_comment() {
+fn the_comments_tab_bar_leads_with_editing_the_selected_comment() {
     use diff_reckoner::app::Tab;
     let r = edited_repo();
     let mut app = app_on(&r);
@@ -999,8 +1017,8 @@ fn the_comments_tab_bar_leads_with_opening_the_selected_comment() {
     press(&mut app, &keymap, KeyCode::Char('3'));
     assert_eq!(app.tab, Tab::Comments);
     let bands = app.footer_bands();
-    assert_eq!(bands[0], (FooterAction::OpenInFiles, Band::Primary));
-    assert!(bands.contains(&(FooterAction::EditComment, Band::Do)));
+    assert_eq!(bands[0], (FooterAction::EditComment, Band::Primary));
+    assert!(bands.contains(&(FooterAction::OpenInFiles, Band::Do)));
     assert!(bands.contains(&(FooterAction::DeleteComment, Band::Do)));
     // The file tabs' own actions have no target here.
     for absent in [FooterAction::Comment, FooterAction::Select, FooterAction::TogglePane] {
@@ -1854,7 +1872,7 @@ fn a_comment_can_be_edited_then_deleted() {
     let anchor_before = app.store.get(0).unwrap().anchor.clone();
 
     app.set_tab(diff_reckoner::app::Tab::Comments).unwrap();
-    app.start_edit();
+    app.activate();
     app.input.clear();
     for ch in "rewritten\nover two lines".chars() {
         app.input_push(ch);
@@ -1893,7 +1911,7 @@ fn an_edit_saves_even_after_an_agent_moved_the_comment() {
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "original");
     app.set_tab(diff_reckoner::app::Tab::Comments).unwrap();
-    app.start_edit();
+    app.activate();
 
     // While the box is open, an agent adds a line above the comment.
     let moved = format!("zero\n{}", r.read("a.rs"));
@@ -1946,7 +1964,7 @@ fn finishing_an_edit_returns_to_its_origin() {
     // Edit in a card → stays on the Comments tab, on the same card.
     app.set_tab(Tab::Comments).unwrap();
     app.step_comment(1);
-    app.start_edit();
+    app.activate();
     assert_eq!(app.edited_card(), Some(1), "the box opens in the selected card");
     app.input_push('!');
     app.submit_comment();
@@ -1957,7 +1975,7 @@ fn finishing_an_edit_returns_to_its_origin() {
     app.set_tab(Tab::Changes).unwrap();
     app.focus = Focus::Diff;
     app.diff_cursor = row_with(&app, '+');
-    app.start_edit();
+    app.activate();
     app.submit_comment();
     assert_eq!(app.mode, Mode::Normal, "a diff-initiated edit returns to Normal");
 }
@@ -1990,7 +2008,7 @@ fn editing_on_the_comments_tab_leaves_the_file_tab_where_it_was() {
     // The card opens its own box: the Changes tab's open file and cursor are not touched.
     let cursor = app.diff_cursor;
     app.set_tab(Tab::Comments).unwrap();
-    app.start_edit();
+    app.activate();
     assert!(app.composing());
     assert_eq!(app.edited_card(), Some(0));
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "the file tab keeps its open file");
@@ -2013,9 +2031,9 @@ fn editing_a_multi_line_comment_opens_the_box_under_its_last_line() {
     typed(&mut app, "two\nlines");
     app.submit_comment();
 
-    // `e` on the comment's first line reopens the box right under its last one.
+    // `enter` on the comment's first line reopens the box right under its last one.
     app.diff_cursor = 0;
-    app.start_edit();
+    app.activate();
     assert!(app.composing());
     assert_eq!(app.diff_cursor, 1, "the edit box opens at the comment's last line");
 }
@@ -2827,13 +2845,13 @@ fn editing_a_comment_on_all_files_opens_the_file_view() {
     assert_eq!(app.diff_path.as_deref(), Some("b.rs"));
 
     // Opening the comment from its card brings a.rs back as a File view, not a diff, and
-    // `e` there edits it in place.
+    // `enter` there edits it in place.
     enter_tab(&mut app, Tab::Comments);
     app.open_comment_in_files().unwrap();
     assert_eq!(app.tab, Tab::AllFiles);
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
     assert_eq!(app.diff.view, View::File, "the comment opens in the File view, not a diff");
-    app.start_edit();
+    app.activate();
     assert!(app.composing(), "the cursor landed on the comment");
 }
 
@@ -2851,7 +2869,7 @@ fn a_comment_opens_in_files_from_any_scope() {
     press(&mut app, &keymap, KeyCode::Enter);
     assert_eq!(app.scope, Scope::Commits);
     enter_tab(&mut app, Tab::Comments);
-    press(&mut app, &keymap, KeyCode::Enter);
+    press(&mut app, &keymap, KeyCode::Char('f'));
     assert_eq!(app.tab, Tab::AllFiles);
     assert_eq!(app.diff_path.as_deref(), Some("root.rs"));
     assert_eq!(app.scope, Scope::Commits, "opening never changes the scope");
@@ -3006,9 +3024,9 @@ fn the_traversal_keys_dispatch_and_rebind() {
     press(&mut app, &keymap, KeyCode::Char('['));
     assert_eq!(cursor_text(&app), "EDIT TWO", "`[` crosses back to the previous file's last hunk");
 
-    press(&mut app, &keymap, KeyCode::Char('f'));
+    press(&mut app, &keymap, KeyCode::Char('}'));
     assert_eq!(app.diff_path.as_deref(), Some("bin.dat"));
-    press(&mut app, &keymap, KeyCode::Char('F'));
+    press(&mut app, &keymap, KeyCode::Char('{'));
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
 
     // `]` and `[` no longer resize. The divider follows the key: `<` moves it left, widening
@@ -3023,8 +3041,46 @@ fn the_traversal_keys_dispatch_and_rebind() {
     let rebound = Keymap::resolve(&[(Action::NextFile, vec![Key::plain('ㅁ')])]).unwrap();
     press(&mut app, &rebound, KeyCode::Char('ㅁ'));
     assert_eq!(app.diff_path.as_deref(), Some("bin.dat"));
-    press(&mut app, &rebound, KeyCode::Char('f'));
+    press(&mut app, &rebound, KeyCode::Char('}'));
     assert_eq!(app.diff_path.as_deref(), Some("bin.dat"), "the replaced default is inert");
+}
+
+#[test]
+fn enter_focuses_the_diff_and_esc_returns_to_the_navigator() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    let keymap = Keymap::default();
+    app.focus = Focus::Files;
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(app.focus, Focus::Diff, "`enter` moves into the diff");
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!((app.focus, app.composing()), (Focus::Diff, false), "off a comment it is inert");
+
+    // `esc` peels the footer expansion before it leaves the diff.
+    app.keys_expanded = true;
+    press(&mut app, &keymap, KeyCode::Esc);
+    assert_eq!((app.keys_expanded, app.focus), (false, Focus::Diff));
+    press(&mut app, &keymap, KeyCode::Esc);
+    assert_eq!(app.focus, Focus::Files, "`esc` returns to the navigator");
+
+    // A hidden navigator stays hidden: `esc` never adds a pane.
+    press(&mut app, &keymap, KeyCode::Enter);
+    press(&mut app, &keymap, KeyCode::Char('z'));
+    assert!(app.navigator_hidden);
+    press(&mut app, &keymap, KeyCode::Esc);
+    assert!(app.navigator_hidden);
+    assert_eq!(app.focus, Focus::Diff);
+}
+
+#[test]
+fn enter_edits_the_comment_under_the_diff_cursor() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    comment_on(&mut app, '+', "note");
+    app.diff_cursor = row_with(&app, '+');
+    press(&mut app, &Keymap::default(), KeyCode::Enter);
+    let Mode::Composing { editing: Some(c) } = &app.mode else { panic!("{:?}", app.mode) };
+    assert_eq!(c.text, "note", "`enter` opens the comment under the cursor");
 }
 
 #[test]
@@ -3325,7 +3381,7 @@ fn three_card_app() -> (Repo, App) {
 }
 
 #[test]
-fn the_arrows_select_cards_and_only_edit_opens_one() {
+fn the_arrows_select_cards_and_only_enter_opens_one() {
     use diff_reckoner::app::Tab;
     let (_r, mut app) = three_card_app();
     let keymap = Keymap::default();
@@ -3343,19 +3399,22 @@ fn the_arrows_select_cards_and_only_edit_opens_one() {
     press(&mut app, &keymap, KeyCode::Up);
     assert_eq!((app.comments.cursor, app.edited_card()), (0, None));
 
-    // `e` opens the selected card; `↓` in a one-line box stays in it.
+    // `e` names no file here; `enter` opens the selected card, and `↓` in a one-line box
+    // stays in it.
     press(&mut app, &keymap, KeyCode::Char('e'));
+    assert_eq!((app.edited_card(), app.editor_request.is_none()), (None, true));
+    press(&mut app, &keymap, KeyCode::Enter);
     assert_eq!(app.edited_card(), Some(0));
     press(&mut app, &keymap, KeyCode::Down);
     assert_eq!(app.edited_card(), Some(0), "the arrows walk the box, not the stack");
     press(&mut app, &keymap, KeyCode::Esc);
     assert!(!app.composing());
 
-    // `f`/`F` select across files.
-    press(&mut app, &keymap, KeyCode::Char('f'));
+    // `}`/`{` select across files.
+    press(&mut app, &keymap, KeyCode::Char('}'));
     assert_eq!((app.comments.cursor, app.edited_card()), (2, None));
-    press(&mut app, &keymap, KeyCode::Char('F'));
-    assert_eq!(app.comments.cursor, 0, "`F` the previous file's first");
+    press(&mut app, &keymap, KeyCode::Char('{'));
+    assert_eq!(app.comments.cursor, 0, "`{{` the previous file's first");
 
     // The file tabs' keys have nothing to act on here and leave the diff beneath alone.
     for key in [KeyCode::Char('c'), KeyCode::Char('v'), KeyCode::Tab, KeyCode::Char(']')] {
@@ -3375,7 +3434,7 @@ fn a_card_saves_on_enter_and_esc_reverts_it() {
     let keymap = Keymap::default();
     enter_tab(&mut app, Tab::Comments);
     press(&mut app, &keymap, KeyCode::Char('j'));
-    press(&mut app, &keymap, KeyCode::Char('e'));
+    press(&mut app, &keymap, KeyCode::Enter);
     typed(&mut app, " edited");
     press(&mut app, &keymap, KeyCode::Enter);
     assert!(!app.composing());
@@ -3383,7 +3442,7 @@ fn a_card_saves_on_enter_and_esc_reverts_it() {
     assert_eq!((app.status.as_str(), app.comments.cursor), ("comment updated", 1));
 
     press(&mut app, &keymap, KeyCode::Char('j'));
-    press(&mut app, &keymap, KeyCode::Char('e'));
+    press(&mut app, &keymap, KeyCode::Enter);
     typed(&mut app, " dropped");
     let b = r.read("b.rs");
     press(&mut app, &keymap, KeyCode::Esc);
@@ -3439,8 +3498,8 @@ fn the_comments_tab_acts_through_the_rebindable_keys() {
     app.set_tab(Tab::Comments).unwrap();
     press(&mut app, &keymap, KeyCode::Char('d'));
     assert_eq!(app.mode, Mode::Normal, "the replaced default is inert");
-    press(&mut app, &keymap, KeyCode::Enter);
-    assert_eq!(app.tab, Tab::Comments, "a rebound `open-comment` frees `enter`");
+    press(&mut app, &keymap, KeyCode::Char('f'));
+    assert_eq!(app.tab, Tab::Comments, "a rebound `open-comment` frees `f`");
     press(&mut app, &keymap, KeyCode::Char('o'));
     assert_eq!(app.tab, Tab::AllFiles, "the rebound key opens the comment");
     press(&mut app, &keymap, KeyCode::Char('3'));
@@ -5785,7 +5844,7 @@ fn a_commits_diff_takes_no_comment_and_edit_opens_the_worktree_file() {
     app.set_scope(Scope::Commits).unwrap();
     app.set_tab(diff_reckoner::app::Tab::Comments).unwrap();
     assert!(app.footer_bands().iter().any(|&(a, _)| a == FooterAction::EditComment));
-    app.start_edit();
+    app.activate();
     app.input.clear();
     typed(&mut app, "edited");
     app.submit_comment();
@@ -6124,7 +6183,7 @@ fn a_tag_counts_inside_a_comment_or_starting_a_line_of_a_file_without_comments()
     );
 
     // It is a comment like any other: it edits in its card and deletes back to the file.
-    press(&mut app, &keymap, KeyCode::Char('e'));
+    press(&mut app, &keymap, KeyCode::Enter);
     assert_eq!(app.edited_card(), Some(0));
     typed(&mut app, " yes");
     press(&mut app, &keymap, KeyCode::Enter);

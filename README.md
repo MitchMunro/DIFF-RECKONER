@@ -23,25 +23,28 @@ comment in the file's own syntax. Every line of it carries the tag:
 // [- REVIEW -] this lock is held across an await
 ```
 
-The file is the only store: `e` rewrites a comment in place, `d` removes its lines, and a
+The file is the only store: `enter` rewrites a comment in place, `d` removes its lines, and a
 comment an agent deletes leaves the list on the next refresh. A comment on a removed line goes
 above the nearest surviving line and starts with `[DELETED: (...)]`, quoting the removed
 line's first 16 characters. Markdown and plain text files take the tag on a bare line with no
 comment marker. Files with no line-comment syntax (JSON, CSV) refuse a comment, and a
 git-ignored file takes one only on a second `c`. `y` copies every comment to the clipboard;
 `x` writes them to `.diff-reckoner/review.md` (a directory that git-ignores itself) and opens
-it in your default app for `.md` files, for a shell with no clipboard: point the agent at the path. Both leave the comments in
-place.
+it in your default app for `.md` files, for a shell with no clipboard: point the agent at the
+path. Both leave the comments in place.
+
+`enter` on a file in the file list moves into the diff (on a directory it expands or collapses
+it), and `esc` moves back.
 
 `3` opens the Comments tab: every comment in the repo, whatever the scope, as a card with five
 lines of the file either side. In a file with no line-comment syntax (JSON, HTML, CSS, CSV), a
 line that starts with the tag is a comment too, so it shows, edits, and deletes like the rest
 (`c` still refuses to write a new one there). The navigator lists each commented file with its comments under
 it. Selecting a comment opens it for editing in its card: click it (in the navigator or the
-stack), or step with `j`/`k` and `f`/`F`. While it is open, `↑`/`↓` run on past the box to the
-neighbouring card, and moving to another comment saves this one; `esc` reverts it and closes
-the box. With no box open, `d` deletes the selected card and `enter` (or a click on a card's
-`path:line`) opens it in the Files tab with the cursor on it.
+stack), or step with `j`/`k` and `}`/`{` and press `enter`. While it is open, `↑`/`↓`
+run on past the box to the neighbouring card, and moving to another comment saves this one;
+`esc` reverts it and closes the box. With no box open, `d` deletes the selected card and `f`
+(or a click on a card's `path:line`) opens it in the Files tab with the cursor on it.
 
 ## Build
 

@@ -1267,11 +1267,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             K::CommitPick => app.open_commit_picker(),
             K::Select => app.toggle_select(),
             K::Comment => app.start_comment(),
-            // `edit`/`delete` act on the comment under the diff cursor, so they only fire with
-            // the diff focused — otherwise `delete` would silently drop a comment under an
-            // off-screen cursor. (The comments-list overlay targets the highlighted row instead.)
-            // `edit` runs from either pane: the read pane's comment or line, the navigator's
-            // selected file.
+            // `delete` acts on the comment under the diff cursor, so it only fires with the
+            // diff focused — otherwise it would silently drop a comment under an off-screen
+            // cursor. `edit` runs from either pane: the read pane's file at its line, the
+            // navigator's selected file.
             K::Edit => app.start_edit(),
             K::Delete if app.focus == Focus::Diff => app.ask_delete_comment(),
             K::Export => app.export_to_file(),
@@ -1283,6 +1282,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             K::Search => app.open_search(),
             K::Find => app.open_find(),
             K::Keys => app.toggle_keys(),
+            K::Activate => app.activate(),
             // `delete` off the diff is inert. `edit` is not: it reaches the navigator's file
             // rows too. `open-comment` has a target on the Comments tab alone.
             K::Delete | K::OpenComment => {}
@@ -1293,7 +1293,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
     match key.code {
         Tab => app.toggle_focus(),
         // `esc` peels one layer: a live selection, then an armed crossing, then the footer
-        // expansion (the `esc` ladder).
+        // expansion, then the diff's focus (the `esc` ladder).
         Esc => app.escape(),
         _ => {}
     }
@@ -1302,8 +1302,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
 
 /// A key on the Comments tab. The movement bindings step and page through the cards, the
 /// file steps cross files, `open-comment` opens the selected comment in `All files`, and
-/// `edit`/`delete` act on it. The file tabs' cursor, fold, selection, and pane keys have no
-/// target here, so they are inert; every other key falls through to its usual action.
+/// `activate`/`delete` act on it. The file tabs' cursor, fold, selection, pane, and `edit`
+/// keys have no target here, so they are inert; every other key falls through to its usual
+/// action.
 /// Returns whether the key was taken.
 fn handle_comments_key(
     app: &mut App,
@@ -1329,10 +1330,11 @@ fn handle_comments_key(
         Some(K::HalfDown) => page(app, 1, true),
         Some(K::HalfUp) => page(app, -1, true),
         Some(K::OpenComment) => app.open_comment_in_files()?,
-        Some(K::Edit) => app.start_edit(),
+        Some(K::Activate) => app.activate(),
         Some(K::Delete) => app.ask_delete_comment(),
         Some(
-            K::Expand
+            K::Edit
+            | K::Expand
             | K::Collapse
             | K::NextHunk
             | K::PrevHunk

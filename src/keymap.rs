@@ -40,6 +40,7 @@ pub enum Action {
     PrevComment,
     TabComments,
     OpenComment,
+    Activate,
     Search,
     Find,
     Keys,
@@ -158,13 +159,13 @@ impl Key {
 
 /// Every action with its config name and default keys — the single source the default keymap,
 /// the name lookup, and the config error message are built from.
-const ACTIONS: [(Action, &str, &[Key]); 41] = [
+const ACTIONS: [(Action, &str, &[Key]); 42] = [
     (Action::Down, "down", &[Key::plain('j'), Key::named(KeyCode::Down)]),
     (Action::Up, "up", &[Key::plain('k'), Key::named(KeyCode::Up)]),
     (Action::NextHunk, "next-hunk", &[Key::plain(']')]),
     (Action::PrevHunk, "prev-hunk", &[Key::plain('[')]),
-    (Action::NextFile, "next-file", &[Key::plain('f')]),
-    (Action::PrevFile, "prev-file", &[Key::plain('F')]),
+    (Action::NextFile, "next-file", &[Key::plain('}')]),
+    (Action::PrevFile, "prev-file", &[Key::plain('{')]),
     (Action::Collapse, "collapse", &[Key::named(KeyCode::Left)]),
     (Action::Expand, "expand", &[Key::named(KeyCode::Right)]),
     (Action::PageUp, "page-up", &[Key::named(KeyCode::PageUp)]),
@@ -192,7 +193,8 @@ const ACTIONS: [(Action, &str, &[Key]); 41] = [
     (Action::Delete, "delete", &[Key::plain('d')]),
     (Action::NextComment, "next-comment", &[Key::plain('n')]),
     (Action::PrevComment, "prev-comment", &[Key::plain('N')]),
-    (Action::OpenComment, "open-comment", &[Key::named(KeyCode::Enter)]),
+    (Action::OpenComment, "open-comment", &[Key::plain('f')]),
+    (Action::Activate, "activate", &[Key::named(KeyCode::Enter)]),
     (Action::Search, "search", &[Key::plain('/')]),
     (Action::Find, "find", &[Key::ctrl('f')]),
     (Action::Keys, "keys", &[Key::plain('?')]),
@@ -370,8 +372,8 @@ mod tests {
     fn find_defaults_to_the_ctrl_f_chord() {
         let keymap = Keymap::default();
         assert_eq!(keymap.action_for(Key::ctrl('f')), Some(Action::Find));
-        // The bare `f` is `next-file`, unshadowed by the chord.
-        assert_eq!(keymap.action_for(Key::plain('f')), Some(Action::NextFile));
+        // The bare `f` is `open-comment`, unshadowed by the chord.
+        assert_eq!(keymap.action_for(Key::plain('f')), Some(Action::OpenComment));
         assert_eq!(keymap.hint(Action::Find), Key::ctrl('f'));
         assert_eq!(keymap.hint(Action::Find).config_str(), "ctrl+f");
     }
