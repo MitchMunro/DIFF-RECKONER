@@ -2018,6 +2018,11 @@ fn row_height(row: &Row, gutter_w: usize, width: usize, wrap: bool) -> usize {
         return 1;
     }
     let code_width = width.saturating_sub(gutter_prefix_width(gutter_w)).max(1);
+    // A row that fits is one segment, and most do: skip building its cells. The layout
+    // measures every row each frame, so this keeps a long file's frame cheap.
+    if display_width(row) <= code_width {
+        return 1;
+    }
     // The find highlight never changes wrapping, so height ignores it.
     wrap_segments(&code_cells(row, false, &[]), code_width, ContinuationSpaces::Trim).len()
 }
@@ -2323,6 +2328,18 @@ fn code_cells(row: &Row, emph_on: bool, hl_ranges: &[(u32, u32)]) -> Vec<Cell> {
         }
     }
     cells
+}
+
+/// The display columns `code_cells` would lay out for `row`, without building the cells.
+fn display_width(row: &Row) -> usize {
+    let mut col = 0usize;
+    for s in row.spans() {
+        for ch in s.text.chars() {
+            col +=
+                if ch == '\t' { TAB - col % TAB } else { UnicodeWidthChar::width(ch).unwrap_or(0) };
+        }
+    }
+    col
 }
 
 /// Build spans from display cells, merging runs of equal color, emphasis, and find-highlight; a

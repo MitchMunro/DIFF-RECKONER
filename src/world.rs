@@ -205,24 +205,37 @@ pub(crate) fn all_files_entries(
     input: &WorldInput,
     changed: &HashMap<String, Annotation>,
 ) -> Result<Vec<Entry>> {
-    let to_entry = |w: git::WorktreeEntry| Entry {
+    let mut entries: Vec<Entry> =
+        git::all_files(&input.repo)?.into_iter().map(|w| worktree_entry(w, changed)).collect();
+    let mut i = 0;
+    while i < entries.len() {
+        if entries[i].is_dir && input.toggled_dirs.contains(&entries[i].path) {
+            let path = entries[i].path.clone();
+            entries.extend(ignored_dir_entries(&input.repo, &path, changed));
+        }
+        i += 1;
+    }
+    Ok(entries)
+}
+
+/// The immediate children of ignored directory `dir`, as `All files` entries. A filesystem
+/// read, no git, so an expand can load them on the keystroke.
+pub(crate) fn ignored_dir_entries(
+    repo: &Path,
+    dir: &str,
+    changed: &HashMap<String, Annotation>,
+) -> Vec<Entry> {
+    git::list_ignored_dir(repo, dir).into_iter().map(|w| worktree_entry(w, changed)).collect()
+}
+
+fn worktree_entry(w: git::WorktreeEntry, changed: &HashMap<String, Annotation>) -> Entry {
+    Entry {
         annotation: changed.get(&w.path).cloned(),
         path: w.path,
         previous_path: None,
         ignored: w.ignored,
         is_dir: w.is_dir,
-    };
-    let mut entries: Vec<Entry> = git::all_files(&input.repo)?.into_iter().map(&to_entry).collect();
-    let mut i = 0;
-    while i < entries.len() {
-        if entries[i].is_dir && input.toggled_dirs.contains(&entries[i].path) {
-            let path = entries[i].path.clone();
-            let children = git::list_ignored_dir(&input.repo, &path).into_iter().map(&to_entry);
-            entries.extend(children);
-        }
-        i += 1;
     }
-    Ok(entries)
 }
 
 /// One queued refresh's attributes, accumulated on `App` until the loop dispatches it.

@@ -595,6 +595,10 @@ fn event_loop(
             if app.mode == crate::app::Mode::Search && !event::poll(Duration::ZERO)? {
                 app.build_search_preview();
             }
+            // Likewise a held file-list key opens the file it rests on once input settles.
+            if app.read_pending() && !event::poll(Duration::ZERO)? {
+                app.settle_read_pending();
+            }
             let viewport = ui::diff_viewport_height(area, app);
             let effective = if app.composing() {
                 let box_h = ui::composer_height(app, ui::diff_inner_width(area, app));
@@ -764,7 +768,11 @@ fn event_loop(
                 }
                 match event {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
-                        if let Err(e) = handle_key(app, k, area, painted_frame.keymap()) {
+                        // More input already queued: a file-list move skips this file's load.
+                        app.defer_reads = event::poll(Duration::ZERO)?;
+                        let handled = handle_key(app, k, area, painted_frame.keymap());
+                        app.defer_reads = false;
+                        if let Err(e) = handled {
                             app.status = format!("error: {e}");
                         }
                         logln!(
@@ -1139,6 +1147,23 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
         _ => None,
     };
     let action = code.and_then(|code| keymap.action_for(crate::keymap::Key { ctrl, alt, code }));
+    // A deferred file-list move opens its file before any key but another move acts.
+    let list_move = matches!(
+        action,
+        Some(
+            K::Down
+                | K::Up
+                | K::PageDown
+                | K::PageUp
+                | K::HalfDown
+                | K::HalfUp
+                | K::NextFile
+                | K::PrevFile
+        )
+    ) && app.focus == Focus::Files;
+    if !list_move {
+        app.settle_read_pending();
+    }
 
     // An armed crossing waits for a repeat of the hunk step that armed it. Every other key drops
     // it, and still does its own work. The steps themselves settle their arm in
@@ -1755,6 +1780,7 @@ pub fn handle_mouse(
     keymap: &Keymap,
     target: &dyn crate::export::ExportTarget,
 ) -> Result<()> {
+    app.settle_read_pending();
     app.hover = Some((m.column, m.row));
     // Pointer motion with no button held, or a fresh mouse-down, proves an active gesture's
     // release was lost — the host may route mouse by pointer position, so a release over another

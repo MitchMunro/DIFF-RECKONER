@@ -735,6 +735,12 @@ pub struct App {
     /// Set by a navigation that moves `file_cursor`; consumed once per frame to scroll the
     /// cursor into view. The wheel never sets it, so wheel-scrolling moves the viewport alone.
     pub reveal_files: bool,
+    /// Set by the event loop while more input is queued behind the key it is handling: a
+    /// file-list move then leaves the open file in place and marks `read_pending`, so a held
+    /// key steps the list at input speed instead of loading every file it passes.
+    pub defer_reads: bool,
+    /// A deferred file-list move whose file is not open yet; see [`Self::settle_read_pending`].
+    read_pending: bool,
     /// Set by a navigation that moves `diff_cursor`; consumed once per frame to scroll the
     /// cursor into view. The wheel never sets it.
     pub reveal_diff: bool,
@@ -965,6 +971,8 @@ impl App {
             file_cursor: 0,
             file_scroll: 0,
             reveal_files: false,
+            defer_reads: false,
+            read_pending: false,
             reveal_diff: false,
             armed_cross: None,
             toggled_dirs: HashSet::new(),
@@ -2624,11 +2632,31 @@ impl App {
     /// Open the diff for the file under the cursor when it differs from the one shown; a
     /// no-op on a directory row, so the current diff stays put.
     fn open_cursor_file(&mut self) {
+        self.read_pending = self.defer_reads;
+        if self.read_pending {
+            return;
+        }
         if let Some(i) = self.file_under_cursor_index()
             && Some(self.entries[i].path.as_str()) != self.diff_path.as_deref()
         {
             self.reset_diff_view();
             self.load_read();
+        }
+    }
+
+    /// Whether a deferred file-list move still owes its file a load.
+    pub fn read_pending(&self) -> bool {
+        self.read_pending
+    }
+
+    /// Open the file a deferred move left under the cursor. The event loop calls this once
+    /// input settles, and before any input that is not itself a file-list move, so nothing
+    /// acts on the file the cursor has already left.
+    pub fn settle_read_pending(&mut self) {
+        if std::mem::take(&mut self.read_pending) {
+            let defer = std::mem::take(&mut self.defer_reads);
+            self.open_cursor_file();
+            self.defer_reads = defer;
         }
     }
 
@@ -2928,12 +2956,32 @@ impl App {
 
     /// Rebuild the tree after a directory's expansion changed, keeping the cursor in range.
     fn apply_dir_change(&mut self) {
-        // In `All files`, expanding an ignored directory loads its children lazily, so the
-        // entry set is rebuilt before the rows. Other tabs just re-flatten.
-        if self.tab == Tab::AllFiles
-            && let Ok(entries) = crate::world::all_files_entries(&self.world_input(), &self.changed)
-        {
-            self.entries = entries;
+        // In `All files`, an ignored directory's children load lazily: a collapsed placeholder
+        // drops them, an expanded one not yet loaded reads them. The rest of the listing is
+        // the poll's to refresh, so a toggle spawns no git. Other tabs just re-flatten.
+        if self.tab == Tab::AllFiles {
+            let collapsed: Vec<String> = self
+                .entries
+                .iter()
+                .filter(|e| e.is_dir && !self.toggled_dirs.contains(&e.path))
+                .map(|e| format!("{}/", e.path))
+                .collect();
+            self.entries.retain(|e| !collapsed.iter().any(|dir| e.path.starts_with(dir)));
+            // Index-walked, so children appended here are visited too, as the poll's build does.
+            let mut i = 0;
+            while i < self.entries.len() {
+                let entry = &self.entries[i];
+                if entry.is_dir && self.toggled_dirs.contains(&entry.path) {
+                    let prefix = format!("{}/", entry.path);
+                    if !self.entries.iter().any(|e| e.path.starts_with(&prefix)) {
+                        let dir = entry.path.clone();
+                        let children =
+                            crate::world::ignored_dir_entries(&self.repo, &dir, &self.changed);
+                        self.entries.extend(children);
+                    }
+                }
+                i += 1;
+            }
         }
         self.rebuild_file_rows();
         self.file_cursor = self.file_cursor.min(self.file_rows.len().saturating_sub(1));
@@ -5012,11 +5060,26 @@ fn keep_in_view(cursor: usize, scroll: usize, heights: &[usize], viewport: usize
         return 0;
     }
     let cursor = cursor.min(heights.len() - 1);
-    let mut top = scroll.min(cursor);
-    while top < cursor && heights[top..=cursor].iter().sum::<usize>() > viewport {
-        top += 1;
+    // The lowest top whose window through the cursor fits, walked back from the cursor; a
+    // cursor row taller than the viewport is its own top. Every walk here stops within a
+    // viewport's worth of rows, so the per-frame clamp stays cheap on a long file.
+    let mut fit = cursor + 1;
+    let mut used = 0;
+    while fit > 0 && used + heights[fit - 1] <= viewport {
+        used += heights[fit - 1];
+        fit -= 1;
     }
-    while top > 0 && heights[top - 1..].iter().sum::<usize>() <= viewport {
+    let mut top = scroll.min(cursor).max(fit.min(cursor));
+    // Pull back over a blank tail. The tail's sum only matters up to the viewport.
+    let mut tail = 0;
+    for &h in &heights[top..] {
+        tail += h;
+        if tail > viewport {
+            break;
+        }
+    }
+    while top > 0 && tail + heights[top - 1] <= viewport {
+        tail += heights[top - 1];
         top -= 1;
     }
     top
@@ -5126,6 +5189,40 @@ mod tests {
     use crate::model::{Comment, CommitPick, Scope};
     use crate::world::{PickStatus, PickVerdict};
     use std::path::PathBuf;
+
+    /// `keep_in_view` agrees with the plain re-summing rule it replaced, across hidden
+    /// (zero-height) rows, wrapped rows, and rows taller than the viewport.
+    #[test]
+    fn keep_in_view_matches_the_resumming_rule() {
+        fn reference(cursor: usize, scroll: usize, heights: &[usize], viewport: usize) -> usize {
+            if viewport == 0 || heights.is_empty() {
+                return 0;
+            }
+            let cursor = cursor.min(heights.len() - 1);
+            let mut top = scroll.min(cursor);
+            while top < cursor && heights[top..=cursor].iter().sum::<usize>() > viewport {
+                top += 1;
+            }
+            while top > 0 && heights[top - 1..].iter().sum::<usize>() <= viewport {
+                top -= 1;
+            }
+            top
+        }
+        let mut seed = 0x2545_f491_u64;
+        let mut next = |m: usize| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) as usize % m
+        };
+        for _ in 0..20_000 {
+            let heights: Vec<usize> = (0..next(30)).map(|_| next(5)).collect();
+            let (cursor, scroll, viewport) = (next(35), next(35), next(12));
+            assert_eq!(
+                super::keep_in_view(cursor, scroll, &heights, viewport),
+                reference(cursor, scroll, &heights, viewport),
+                "cursor {cursor} scroll {scroll} viewport {viewport} heights {heights:?}"
+            );
+        }
+    }
 
     /// A one-line comment as a scan would find it at `line`.
     fn comment_at(file: &str, line: u32, text: &str) -> Comment {

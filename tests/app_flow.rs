@@ -6404,3 +6404,44 @@ fn export_writes_the_review_file_and_opens_it_without_touching_git() {
         "the export directory ignores itself"
     );
 }
+
+#[test]
+fn a_deferred_file_list_move_opens_its_file_before_any_other_key() {
+    let r = Repo::init();
+    for i in 0..4 {
+        r.write(&format!("f{i}.txt"), "one\n");
+    }
+    r.commit_all("init");
+    for i in 0..4 {
+        r.write(&format!("f{i}.txt"), "two\n");
+    }
+    let mut app = app_on(&r);
+    let keymap = diff_reckoner::keymap::default_keymap().clone();
+    app.focus = Focus::Files;
+    let path = |a: &App, row: usize| a.entries[a.file_rows[row].file_index().unwrap()].path.clone();
+    let opened = app.diff_path.clone();
+
+    // Keys queued behind: each move steps the list and leaves the open file alone.
+    app.defer_reads = true;
+    press(&mut app, &keymap, KeyCode::Down);
+    press(&mut app, &keymap, KeyCode::Down);
+    app.defer_reads = false;
+    assert_eq!(app.file_cursor, 2);
+    assert_eq!(app.diff_path, opened);
+    assert!(app.read_pending());
+
+    // A key that is not a list move acts on the file under the cursor, not the one it left.
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert!(!app.read_pending());
+    assert_eq!(app.diff_path, Some(path(&app, 2)));
+    assert_eq!(app.focus, Focus::Diff);
+
+    // Input settling opens it too.
+    app.focus = Focus::Files;
+    app.defer_reads = true;
+    press(&mut app, &keymap, KeyCode::Up);
+    app.defer_reads = false;
+    assert_eq!(app.diff_path, Some(path(&app, 2)));
+    app.settle_read_pending();
+    assert_eq!(app.diff_path, Some(path(&app, 1)));
+}
