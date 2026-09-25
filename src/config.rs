@@ -66,7 +66,7 @@ impl Config {
     }
 }
 
-const PLUGIN_CONFIG_KEYS: [&str; 10] = [
+const PLUGIN_CONFIG_KEYS: [&str; 11] = [
     "theme",
     "dark_theme",
     "light_theme",
@@ -75,6 +75,7 @@ const PLUGIN_CONFIG_KEYS: [&str; 10] = [
     "toggle_placement",
     "toggle_direction",
     "auto_open",
+    "whole_file",
     "editor",
     "keybindings",
 ];
@@ -166,6 +167,9 @@ pub struct PluginConfig {
     toggle_placement: TogglePlacement,
     toggle_direction: ToggleDirection,
     auto_open: bool,
+    /// Whether the Changes tab opens in whole-file view. A startup default: a reread never
+    /// flips a running pane's view.
+    whole_file: bool,
     editor: Option<String>,
     keymap: crate::keymap::Keymap,
 }
@@ -181,6 +185,7 @@ impl Default for PluginConfig {
             toggle_placement: TogglePlacement::Split,
             toggle_direction: ToggleDirection::Right,
             auto_open: true,
+            whole_file: true,
             editor: None,
             keymap: crate::keymap::Keymap::default(),
         }
@@ -232,6 +237,10 @@ impl PluginConfig {
         self.auto_open
     }
 
+    pub fn whole_file(&self) -> bool {
+        self.whole_file
+    }
+
     /// The editor command template, `{file}` and `{line}` substituted.
     pub fn editor(&self) -> Option<&str> {
         self.editor.as_deref()
@@ -262,6 +271,7 @@ impl PluginConfig {
             "toggle_placement": self.toggle_placement.as_str(),
             "toggle_direction": self.toggle_direction.as_str(),
             "auto_open": self.auto_open,
+            "whole_file": self.whole_file,
             "editor": self.editor,
             "keybindings": keybindings,
         })
@@ -496,6 +506,10 @@ fn parse_plugin_config(path: &Path) -> Result<PluginConfig, PluginConfigError> {
         config.auto_open =
             value.as_bool().ok_or_else(|| value_error(path, "auto_open", "a boolean"))?;
     }
+    if let Some(value) = table.get("whole_file") {
+        config.whole_file =
+            value.as_bool().ok_or_else(|| value_error(path, "whole_file", "a boolean"))?;
+    }
     if let Some(value) = table.get("editor") {
         let command = value
             .as_str()
@@ -720,6 +734,7 @@ mod tests {
         assert_eq!(config.toggle_placement(), TogglePlacement::Split);
         assert_eq!(config.toggle_direction(), ToggleDirection::Right);
         assert!(config.auto_open());
+        assert!(config.whole_file());
     }
 
     #[test]
@@ -734,6 +749,7 @@ mod tests {
                 "toggle_placement = \"overlay\"\n",
                 "toggle_direction = \"down\"\n",
                 "auto_open = false\n",
+                "whole_file = false\n",
             ),
         )
         .unwrap();
@@ -744,6 +760,7 @@ mod tests {
         assert_eq!(config.toggle_placement(), TogglePlacement::Overlay);
         assert_eq!(config.toggle_direction(), ToggleDirection::Down);
         assert!(!config.auto_open());
+        assert!(!config.whole_file());
     }
 
     #[test]
@@ -808,6 +825,7 @@ mod tests {
             ("toggle_placement = \"left\"\n", "`toggle_placement`"),
             ("toggle_direction = \"left\"\n", "`toggle_direction`"),
             ("auto_open = \"yes\"\n", "`auto_open`"),
+            ("whole_file = 1\n", "`whole_file`"),
             ("editor = \"\"\n", "`editor`"),
             ("editor = \"   \"\n", "`editor`"),
             ("editor = 42\n", "`editor`"),
@@ -1020,6 +1038,7 @@ mod tests {
         assert_eq!(object["toggle_placement"], "split");
         assert_eq!(object["toggle_direction"], "right");
         assert_eq!(object["auto_open"], true);
+        assert_eq!(object["whole_file"], true);
         let keybindings = object["keybindings"].as_object().unwrap();
         assert_eq!(
             keybindings.len(),

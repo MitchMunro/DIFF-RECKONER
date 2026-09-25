@@ -21,13 +21,33 @@ pub struct Span {
 }
 
 /// A rendered diff row. Content rows (`Context`/`Deletion`/`Insertion`) are selectable
-/// for comments; a `Fold` is a collapsed run of context lines it owns.
+/// for comments; a `Fold` is a collapsed run of context lines it owns, and `Shown` the marker
+/// over one opened in place (only ever in `App::visible`, above the lines it stands for).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Row {
-    Context { old_no: u32, new_no: u32, spans: Vec<Span> },
-    Deletion { old_no: u32, spans: Vec<Span>, emphasis: Vec<CharRange> },
-    Insertion { new_no: u32, spans: Vec<Span>, emphasis: Vec<CharRange> },
-    Fold { lines: Vec<Row> },
+    Context {
+        old_no: u32,
+        new_no: u32,
+        spans: Vec<Span>,
+    },
+    Deletion {
+        old_no: u32,
+        spans: Vec<Span>,
+        emphasis: Vec<CharRange>,
+    },
+    Insertion {
+        new_no: u32,
+        spans: Vec<Span>,
+        emphasis: Vec<CharRange>,
+    },
+    Fold {
+        lines: Vec<Row>,
+    },
+    /// An opened fold's marker: the fold's `anchor` and the count of lines shown below it.
+    Shown {
+        anchor: u32,
+        lines: usize,
+    },
 }
 
 /// A `[start, end)` run of char indices within a line, for word-level emphasis.
@@ -37,14 +57,14 @@ impl Row {
     pub fn old_no(&self) -> Option<u32> {
         match self {
             Row::Context { old_no, .. } | Row::Deletion { old_no, .. } => Some(*old_no),
-            Row::Insertion { .. } | Row::Fold { .. } => None,
+            Row::Insertion { .. } | Row::Fold { .. } | Row::Shown { .. } => None,
         }
     }
 
     pub fn new_no(&self) -> Option<u32> {
         match self {
             Row::Context { new_no, .. } | Row::Insertion { new_no, .. } => Some(*new_no),
-            Row::Deletion { .. } | Row::Fold { .. } => None,
+            Row::Deletion { .. } | Row::Fold { .. } | Row::Shown { .. } => None,
         }
     }
 
@@ -53,7 +73,7 @@ impl Row {
             Row::Context { spans, .. }
             | Row::Deletion { spans, .. }
             | Row::Insertion { spans, .. } => spans,
-            Row::Fold { .. } => &[],
+            Row::Fold { .. } | Row::Shown { .. } => &[],
         }
     }
 
@@ -62,28 +82,30 @@ impl Row {
     pub fn emphasis(&self) -> &[CharRange] {
         match self {
             Row::Deletion { emphasis, .. } | Row::Insertion { emphasis, .. } => emphasis,
-            Row::Context { .. } | Row::Fold { .. } => &[],
+            Row::Context { .. } | Row::Fold { .. } | Row::Shown { .. } => &[],
         }
     }
 
-    /// The diff marker for this row: `' '`, `'-'`, or `'+'`; `' '` for a fold.
+    /// The diff marker for this row: `' '`, `'-'`, or `'+'`; `' '` for a fold marker.
     pub fn marker(&self) -> char {
         match self {
             Row::Deletion { .. } => '-',
             Row::Insertion { .. } => '+',
-            Row::Context { .. } | Row::Fold { .. } => ' ',
+            Row::Context { .. } | Row::Fold { .. } | Row::Shown { .. } => ' ',
         }
     }
 
-    /// Whether this row anchors a comment — every kind but a fold.
+    /// Whether this row anchors a comment — every kind but a fold marker.
     pub fn is_content(&self) -> bool {
-        !matches!(self, Row::Fold { .. })
+        !matches!(self, Row::Fold { .. } | Row::Shown { .. })
     }
 
-    /// The content rows this row stands for: a fold's hidden lines, else the row itself.
+    /// The content rows this row stands for: a fold's hidden lines, none for a `Shown` marker
+    /// (its lines are rows of their own), else the row itself.
     pub fn lines(&self) -> &[Row] {
         match self {
             Row::Fold { lines } => lines,
+            Row::Shown { .. } => &[],
             _ => std::slice::from_ref(self),
         }
     }
@@ -97,10 +119,11 @@ impl Row {
     }
 
     /// A fold's stable identity across rebuilds: the line number of its first hidden
-    /// line. `None` for any other row.
+    /// line, which an opened fold's `Shown` marker carries. `None` for any other row.
     pub fn fold_anchor(&self) -> Option<u32> {
         match self {
             Row::Fold { lines } => lines.first().and_then(|r| r.new_no().or_else(|| r.old_no())),
+            Row::Shown { anchor, .. } => Some(*anchor),
             _ => None,
         }
     }
@@ -300,7 +323,7 @@ pub(crate) fn set_row_spans(row: &mut Row, next: Vec<Span>) {
         Row::Context { spans, .. } | Row::Deletion { spans, .. } | Row::Insertion { spans, .. } => {
             *spans = next;
         }
-        Row::Fold { .. } => {}
+        Row::Fold { .. } | Row::Shown { .. } => {}
     }
 }
 

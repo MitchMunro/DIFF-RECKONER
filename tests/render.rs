@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{Repo, app_on, enter_tab};
+use common::{Repo, app_on, enter_tab, folded_app_on};
 use diff_reckoner::app::{App, Focus, Tab};
 use diff_reckoner::config::NavigatorPosition;
 use diff_reckoner::keymap::Keymap;
@@ -260,7 +260,7 @@ fn caret_vertical_moves_between_wrapped_rows() {
 }
 
 #[test]
-fn the_fold_hint_names_the_expand_binding() {
+fn a_fold_marker_reads_hidden_or_shown_and_names_the_activate_binding() {
     use std::fmt::Write as _;
     let r = Repo::init();
     let mut body = String::new();
@@ -270,22 +270,38 @@ fn the_fold_hint_names_the_expand_binding() {
     r.write("f.rs", &body);
     r.commit_all("init");
     r.write("f.rs", &body.replace("line 15", "LINE 15")); // one change, long runs fold
-    let mut app = app_on(&r);
+    let mut app = folded_app_on(&r);
     app.focus = Focus::Diff;
     app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).expect("a fold row");
+    let n = app.visible[app.diff_cursor].hidden();
 
     let out = render(&app);
-    assert!(out.contains("→ expand"), "the fold hint names the `→` key");
-    assert!(!out.contains("⏎ expand"), "no stale enter hint remains");
+    assert!(out.contains(&format!("▸  {n} unmodified lines hidden — enter expand")), "{out}");
+    assert!(out.contains("enter expand fold"), "the footer names it too");
+    assert!(!out.contains("→ expand"), "no stale arrow hint remains");
 
-    // A rebound `expand` renames the fold row's inline label and the footer hint alike
+    app.toggle_fold();
+    let out = render(&app);
+    assert!(out.contains(&format!("▾  {n} unmodified lines shown — enter hide")), "{out}");
+    assert!(out.contains("enter hide fold"), "the footer names the hide");
+
+    // A rebound `activate` renames the marker's inline label and the footer hint alike
     // (a hint shows the action's first bound key).
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("config.toml"), "[keybindings]\nexpand = [\"o\"]\n").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[keybindings]\nactivate = [\"o\"]\n").unwrap();
     app.set_plugin_config(diff_reckoner::config::plugin_config_in(dir.path()).unwrap());
     let out = render(&app);
-    assert!(out.contains("o expand"), "the rebound key names the hint:\n{out}");
-    assert!(!out.contains("→ expand"), "the freed arrow leaves the hint");
+    assert!(out.contains("shown — o hide"), "the rebound key names the hint:\n{out}");
+    assert!(out.contains("o hide fold"), "and the footer's");
+}
+
+#[test]
+fn the_whole_file_key_shows_on_the_footers_first_row() {
+    let (_r, mut app) = edited_app();
+    let last = |out: &str| out.lines().last().unwrap().to_string();
+    assert!(last(&render(&app)).contains("a fold lines"), "whole-file view offers the fold");
+    app.whole_file = false;
+    assert!(last(&render(&app)).contains("a all lines"), "folded, it offers every line");
 }
 
 /// `hello.rs` with one edited line. The repo is returned to keep it on disk: a comment
@@ -757,6 +773,12 @@ fn export_follows_copy_on_row_one_and_yields_first_on_a_narrow_pane() {
     assert!(!narrow.contains("export"), "export yields first:\n{narrow}");
     assert!(!narrow.contains("clipboard"), "a tight row sheds to `y copy`:\n{narrow}");
     assert!(ends_with_hint(&narrow), "the `?` never drops:\n{narrow}");
+
+    // The whole-file key acts on the view, not the cursor, so it yields before export does,
+    // and with the room it sits ahead of the sends like any action.
+    assert!(!wide.contains("a fold lines"), "the view key yields to export:\n{wide}");
+    let roomy = footer_line(&render_at(&app, 180));
+    assert!(roomy.contains("a fold lines · y copy"), "given room, it shows:\n{roomy}");
 
     app.set_tab(Tab::Comments).unwrap();
     let listed = footer_line(&render_at(&app, 120));
@@ -3314,7 +3336,7 @@ fn follow_terminal_bars_take_no_fill_on_a_dark_terminal() {
     r.write("hello.rs", &body);
     r.commit_all("init");
     r.write("hello.rs", &body.replace("line 40\n", "LINE 40\n"));
-    let mut app = app_on(&r);
+    let mut app = folded_app_on(&r);
     app.set_cli_theme(Some("terminal".to_string()));
     enter_tab(&mut app, Tab::Changes);
     // The cursor rests on the change, off the fold.
@@ -3328,7 +3350,7 @@ fn follow_terminal_bars_take_no_fill_on_a_dark_terminal() {
     let out = dump(&buf);
     let y = out.lines().position(|l| l.contains("unmodified lines")).expect("a fold") as u16;
     let row = out.lines().nth(y as usize).unwrap();
-    assert!(row.contains("unmodified lines ─"), "{row}");
+    assert!(row.contains("unmodified lines hidden ─"), "{row}");
     let x = row.chars().position(|c| c == 'u').unwrap() as u16;
     let cell = buf.cell((x, y)).unwrap();
     assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset), "{cell:?}");

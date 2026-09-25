@@ -312,6 +312,7 @@ fn app_for(cfg: &Config, initial_config: &Result<PluginConfig, config::PluginCon
 fn ready_app(cfg: &Config, plugin_config: PluginConfig) -> App {
     let repo = repo_root(cfg);
     let scope = plugin_config.default_scope();
+    let whole_file = plugin_config.whole_file();
     logln!(
         "start repo={} poll={:?} base={:?} scope={}",
         repo.display(),
@@ -320,6 +321,7 @@ fn ready_app(cfg: &Config, plugin_config: PluginConfig) -> App {
         scope.name()
     );
     let mut app = App::new(repo, scope, cfg.base.clone());
+    app.whole_file = whole_file;
     app.set_config_dir(cfg.plugin_config_dir.clone());
     app.set_plugin_config(plugin_config);
     app.set_cli_theme(cfg.theme.clone());
@@ -1233,16 +1235,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             K::TabComments => app.set_tab(crate::app::Tab::Comments)?,
             K::Down => app.move_cursor(1)?,
             K::Up => app.move_cursor(-1)?,
-            // `expand`/`collapse` act on the collapsible under the cursor — a directory in the
-            // file list, a fold in the diff (expand-only) — and otherwise scroll the diff
-            // sideways (`scroll_h` is a no-op while wrapping, so it only acts when h-scroll is
-            // meaningful).
+            // `expand`/`collapse` act on a directory under the file list's cursor, and otherwise
+            // scroll the diff sideways (`scroll_h` is a no-op while wrapping, so it only acts
+            // when h-scroll is meaningful). A diff fold opens and hides on `activate`.
             K::Expand if app.on_folder() => app.expand_dir(),
             K::Collapse if app.on_folder() => app.collapse_dir(),
-            K::Expand if app.on_fold() => {
-                let heights = ui::diff_row_heights(app, area);
-                app.expand_fold(&heights, ui::diff_viewport_height(area, app));
-            }
             K::Expand => app.scroll_h(8),
             K::Collapse => app.scroll_h(-8),
             K::PageDown => app.move_cursor(PAGE)?,
@@ -1254,6 +1251,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             K::NextFile => app.next_file(),
             K::PrevFile => app.prev_file(),
             K::Wrap => app.toggle_wrap(),
+            K::WholeFile => {
+                let heights = ui::diff_row_heights(app, area);
+                let viewport = ui::diff_viewport_height(area, app);
+                app.toggle_whole_file(&heights, viewport, |app| ui::diff_row_heights(app, area));
+            }
             K::Theme => app.open_theme_picker(),
             K::Preview => app.toggle_preview(),
             K::NavigatorPosition => app.cycle_navigator_position(),
@@ -1341,6 +1343,7 @@ fn handle_comments_key(
             | K::Select
             | K::Comment
             | K::Preview
+            | K::WholeFile
             | K::Find
             | K::BasePick
             | K::CommitPick,
@@ -1734,7 +1737,7 @@ fn perform_click(
                 app.focus = Focus::Diff;
                 app.diff_cursor = i;
                 app.select_anchor = None;
-                app.expand_fold(heights, ui::diff_viewport_height(area, app));
+                app.toggle_fold();
             }
         }
     }
@@ -1973,8 +1976,8 @@ pub fn handle_mouse(
                 app.focus = Focus::Diff;
                 app.diff_cursor = i;
                 app.select_anchor = None;
-                // A click on a fold marker expands it, keeping the viewport still.
-                app.expand_fold(heights, ui::diff_viewport_height(area, app));
+                // A click on a fold marker opens or hides it, the marker holding still.
+                app.toggle_fold();
             }
         }
         MouseEventKind::Drag(MouseButton::Left) if app.gutter_drag() => {
@@ -2200,6 +2203,31 @@ mod refresh_tests {
         ));
         assert_eq!(app.scope, Scope::Uncommitted, "a reread never switches the active scope");
         assert_eq!(epoch, 0, "a default_scope change invalidates no running work");
+    }
+
+    #[test]
+    fn whole_file_seeds_a_fresh_pane_and_a_reread_never_flips_it() {
+        let repo = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let path = config_dir.path().join("config.toml");
+        std::fs::write(&path, "whole_file = false\n").unwrap();
+        let cfg = Config::parse([repo.path().display().to_string()]);
+        let mut app = ready_app(&cfg, plugin_config_in(config_dir.path()).unwrap());
+        assert!(!app.whole_file, "startup seeds the configured view");
+
+        std::fs::write(&path, "whole_file = true\n").unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut epoch = 0;
+        let mut recovery_inflight = false;
+        assert!(apply_plugin_config_observation(
+            &mut app,
+            &cfg,
+            &mut epoch,
+            &tx,
+            &mut recovery_inflight,
+            plugin_config_in(config_dir.path()),
+        ));
+        assert!(!app.whole_file, "a reread never flips the running view");
     }
 
     #[test]

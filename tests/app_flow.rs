@@ -6,7 +6,7 @@ mod common;
 use std::cell::RefCell;
 
 use anyhow::{Result, bail};
-use common::{Repo, app_on, enter_tab, typed};
+use common::{Repo, app_on, enter_tab, folded_app_on, typed};
 use diff_reckoner::app::{App, Band, Focus, FooterAction, Mode};
 use diff_reckoner::config::NavigatorPosition;
 use diff_reckoner::export::ExportTarget;
@@ -665,12 +665,6 @@ fn opening_a_comment_in_files_surfaces_it_under_collapsed_directories() {
     assert_eq!(app.focus, Focus::Diff);
 }
 
-/// Expand the fold under the cursor with synthetic geometry (these tests don't render).
-fn expand_fold(app: &mut App) {
-    let heights = vec![1usize; app.visible.len()];
-    app.expand_fold(&heights, 80);
-}
-
 /// Place the diff cursor on the first row with `marker` and write a comment there.
 fn comment_on(app: &mut App, marker: char, text: &str) {
     app.focus = Focus::Diff;
@@ -1120,31 +1114,56 @@ fn folded_repo() -> Repo {
 }
 
 #[test]
-fn a_fold_expands_permanently_and_keeps_the_cursor_in_range() {
+fn enter_opens_a_fold_under_a_shown_marker_and_hides_it_again() {
+    use diff_reckoner::diff::Row;
     let r = folded_repo();
-    let mut app = app_on(&r);
+    let mut app = folded_app_on(&r);
+    let keymap = Keymap::default();
     app.focus = Focus::Diff;
     let folded = app.visible.len();
-    assert!(app.visible.iter().any(|row| row.hidden() > 0), "opens folded");
+    let fold = app.visible.iter().position(|row| row.hidden() > 0).expect("opens folded");
+    let n = app.visible[fold].hidden();
+    app.diff_cursor = fold;
 
-    // Land on the leading fold and expand it (the `→` action) — the visible count grows.
-    app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
-    assert!(app.on_fold(), "`→` expands here");
-    expand_fold(&mut app);
-    let expanded = app.visible.len();
-    assert!(expanded > folded, "expanding reveals the hidden lines");
-    assert!(app.diff_cursor < app.visible.len(), "cursor stays in range");
-    assert!(!app.on_fold(), "the fold is gone, so `→` now scrolls instead");
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(app.visible.len(), folded + n, "the lines open below the marker");
+    assert_eq!(app.visible[fold], Row::Shown { anchor: 1, lines: n }, "which now reads shown");
+    assert_eq!(app.diff_cursor, fold, "the cursor stays on it");
+    assert!(app.on_fold(), "so enter hides it again");
 
-    // Expansion is permanent — pressing again on a revealed content line does nothing.
-    expand_fold(&mut app);
-    assert_eq!(app.visible.len(), expanded, "no collapse-back");
+    press(&mut app, &keymap, KeyCode::Right);
+    assert_eq!(app.visible.len(), folded + n, "`→` no longer folds");
+
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(app.visible.len(), folded, "enter hides the lines");
+    assert_eq!(app.visible[fold].hidden(), n);
+}
+
+#[test]
+fn a_selection_runs_across_a_shown_marker_and_never_toggles_it() {
+    let r = folded_repo();
+    let mut app = folded_app_on(&r);
+    app.focus = Focus::Diff;
+    let head = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
+    app.diff_cursor = head;
+    app.toggle_fold();
+
+    // From below the opened fold, select up through its marker to the top.
+    let below = app.visible.iter().position(|row| row.new_no() == Some(20)).unwrap();
+    app.diff_cursor = below;
+    app.toggle_select();
+    app.move_cursor(-100).unwrap();
+    assert_eq!(app.diff_cursor, head, "the selection reaches the marker");
+    assert!(!app.on_fold(), "enter leaves the marker alone while selecting");
+    let open = app.visible.len();
+    app.activate();
+    assert_eq!(app.visible.len(), open, "the fold stays open under the selection");
 }
 
 #[test]
 fn a_selection_cannot_cross_a_fold() {
     let r = folded_repo();
-    let mut app = app_on(&r);
+    let mut app = folded_app_on(&r);
     app.focus = Focus::Diff;
 
     // Anchor just above the trailing fold, then try to select well past it.
@@ -1168,7 +1187,7 @@ fn a_selection_cannot_cross_a_fold() {
 #[test]
 fn paging_the_diff_cannot_cross_a_fold() {
     let r = folded_repo();
-    let mut app = app_on(&r);
+    let mut app = folded_app_on(&r);
     app.focus = Focus::Diff;
     let tail = app.visible.iter().rposition(|row| row.hidden() > 0).unwrap();
     app.diff_cursor = tail - 1;
@@ -1190,12 +1209,12 @@ fn expanding_a_fold_does_not_bleed_into_another_file() {
     r.commit_all("init");
     r.write("a.rs", &body.replace("line 20", "A20"));
     r.write("b.rs", &body.replace("line 20", "B20"));
-    let mut app = app_on(&r); // a.rs opens first (sorted)
+    let mut app = folded_app_on(&r); // a.rs opens first (sorted)
 
     // Expand a.rs's leading fold (its anchor is line 1, same as b.rs's leading fold).
     app.focus = Focus::Diff;
     app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
-    expand_fold(&mut app);
+    app.toggle_fold();
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
 
     // Switching to b.rs must not carry a.rs's expansion across (shared line-number key).
@@ -1206,35 +1225,142 @@ fn expanding_a_fold_does_not_bleed_into_another_file() {
 }
 
 #[test]
-fn expanding_a_fold_keeps_the_viewport_still() {
+fn a_fold_marker_holds_its_place_as_it_opens_and_closes() {
     let r = folded_repo();
-
-    // A fold in the top half grows upward: scroll advances so the lines below hold position.
-    let mut app = app_on(&r);
+    let mut app = folded_app_on(&r);
     app.focus = Focus::Diff;
-    let head = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
-    let shift = app.visible[head].hidden() - 1;
-    app.diff_cursor = head;
-    app.diff_scroll = 0;
-    let heights = vec![1usize; app.visible.len()];
-    app.expand_fold(&heights, 20);
-    assert_eq!(app.diff_scroll, shift, "top-half fold grows upward");
 
-    // A fold in the bottom half grows downward: scroll holds so the lines above stay put.
-    let mut app = app_on(&r);
-    app.focus = Focus::Diff;
+    // On screen, the marker keeps its row and the lines open below it.
     let tail = app.visible.iter().rposition(|row| row.hidden() > 0).unwrap();
     app.diff_cursor = tail;
-    app.diff_scroll = 0;
+    app.diff_scroll = 1;
+    app.toggle_fold();
+    assert_eq!(app.diff_scroll, 1, "the view holds while the lines open below");
+    app.toggle_fold();
+    assert_eq!(app.diff_scroll, 1, "and while they close");
+
+    // Wheeled above the viewport, the scroll moves with the rows, so the view holds still.
+    let head = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
+    let n = app.visible[head].hidden();
+    app.diff_cursor = head;
+    app.diff_scroll = head + 3;
+    app.toggle_fold();
+    assert_eq!(app.diff_scroll, head + 3 + n, "the rows opened above push the scroll down");
+    app.toggle_fold();
+    assert_eq!(app.diff_scroll, head + 3, "and closing them pulls it back");
+}
+
+/// `whole-file` with every row one line tall in a 10-row viewport.
+fn toggle_whole_file(app: &mut App) {
     let heights = vec![1usize; app.visible.len()];
-    app.expand_fold(&heights, tail + 2); // the fold sits in the bottom half of the viewport
-    assert_eq!(app.diff_scroll, 0, "bottom-half fold grows downward");
+    app.toggle_whole_file(&heights, 10, |app| vec![1; app.visible.len()]);
+}
+
+#[test]
+fn whole_file_view_shows_every_line_and_the_toggle_folds_the_rest() {
+    let r = folded_repo();
+    let mut app = app_on(&r);
+    assert!(
+        app.visible.iter().all(diff_reckoner::diff::Row::is_content),
+        "whole-file view opens unfolded"
+    );
+    let every = app.visible.len();
+
+    toggle_whole_file(&mut app);
+    assert!(!app.whole_file);
+    assert!(app.visible.iter().any(|row| row.hidden() > 0), "off, the unchanged runs fold");
+    toggle_whole_file(&mut app);
+    assert_eq!(app.visible.len(), every, "back on, every line shows again");
+}
+
+#[test]
+fn a_fold_opened_by_hand_survives_a_whole_file_round_trip() {
+    let r = folded_repo();
+    let mut app = folded_app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
+    app.toggle_fold();
+    let opened = app.visible.len();
+
+    toggle_whole_file(&mut app);
+    toggle_whole_file(&mut app);
+    assert_eq!(app.visible.len(), opened, "the hand-opened fold is open, the other folded");
+    assert!(
+        matches!(app.visible[0], diff_reckoner::diff::Row::Shown { .. }),
+        "the leading fold stayed open, under its shown marker"
+    );
+}
+
+#[test]
+fn the_whole_file_toggle_keeps_the_cursors_line_and_its_place_on_screen() {
+    let r = folded_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    let line = |app: &App, n: u32| app.visible.iter().position(|row| row.new_no() == Some(n));
+    app.diff_scroll = line(&app, 18).unwrap();
+    app.diff_cursor = line(&app, 23).unwrap();
+    let offset = app.diff_cursor - app.diff_scroll;
+
+    toggle_whole_file(&mut app);
+    assert_eq!(app.visible[app.diff_cursor].new_no(), Some(23), "same line, folded");
+    assert_eq!(app.diff_cursor - app.diff_scroll, offset, "same place on screen");
+    toggle_whole_file(&mut app);
+    assert_eq!(app.visible[app.diff_cursor].new_no(), Some(23), "same line, unfolded");
+    assert_eq!(app.diff_cursor - app.diff_scroll, offset);
+
+    // A line that folds away leaves the cursor on the fold that hides it.
+    app.diff_cursor = line(&app, 5).unwrap();
+    toggle_whole_file(&mut app);
+    assert!(app.visible[app.diff_cursor].hidden() > 0, "the cursor rests on the fold");
+}
+
+#[test]
+fn folding_under_a_selection_stops_it_shy_of_the_fold() {
+    let r = folded_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    let line = |app: &App, n: u32| app.visible.iter().position(|row| row.new_no() == Some(n));
+    app.diff_cursor = line(&app, 22).unwrap();
+    app.toggle_select();
+    app.diff_cursor = line(&app, 30).unwrap();
+
+    toggle_whole_file(&mut app);
+    let (lo, hi) = app.selection_range();
+    assert_eq!(app.visible[lo].new_no(), Some(22), "the anchor keeps its line");
+    assert!((lo..=hi).all(|i| app.visible[i].is_content()), "no fold row is in the selection");
+
+    // A selection wholly inside an unchanged run folds away with it.
+    toggle_whole_file(&mut app);
+    app.select_anchor = None;
+    app.diff_cursor = line(&app, 5).unwrap();
+    app.toggle_select();
+    app.diff_cursor = line(&app, 8).unwrap();
+    toggle_whole_file(&mut app);
+    assert_eq!(app.select_anchor, None, "nothing on screen is left to select");
+}
+
+#[test]
+fn the_whole_file_toggle_is_inert_off_the_changes_tab() {
+    use diff_reckoner::app::Tab;
+    let r = folded_repo();
+    let mut app = app_on(&r);
+    enter_tab(&mut app, Tab::AllFiles);
+    toggle_whole_file(&mut app);
+    assert!(app.whole_file, "All files has no folds to toggle");
+    let footer = app.footer_bands();
+    assert!(!footer.iter().any(|&(a, _)| a == FooterAction::WholeFile), "and offers no key");
+
+    enter_tab(&mut app, Tab::Changes);
+    let footer = app.footer_bands();
+    assert!(footer.contains(&(FooterAction::WholeFile, Band::Do)), "Changes offers it on row 1");
+    let go = footer.iter().filter(|&&(a, _)| a == FooterAction::WholeFile).count();
+    assert_eq!(go, 1, "and nowhere else");
 }
 
 #[test]
 fn a_comment_through_a_fold_anchors_to_gits_line_and_survives_a_poll() {
     let r = folded_repo();
-    let mut app = app_on(&r);
+    let mut app = folded_app_on(&r);
     app.focus = Focus::Diff;
 
     // Comment on the changed line (new-side 21) while the rest is folded.
@@ -1250,7 +1376,7 @@ fn a_comment_through_a_fold_anchors_to_gits_line_and_survives_a_poll() {
 
     // A fold expand plus a poll keeps the comment, painted as its own tag line.
     app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
-    expand_fold(&mut app);
+    app.toggle_fold();
     app.reload().unwrap();
     assert_eq!(app.store.len(), 1, "the comment survives a fold expand and a poll");
     assert!(app.commented_lines().iter().any(|&i| app.visible[i].text().ends_with("here")));
@@ -3249,7 +3375,7 @@ fn find_searches_folded_content_and_a_step_expands_the_fold() {
     r.write("m.rs", &base);
     r.commit_all("init");
     r.write("m.rs", &base.replace("last = 1", "last = total"));
-    let mut app = app_on(&r);
+    let mut app = folded_app_on(&r);
     let keymap = Keymap::default();
     app.focus = Focus::Diff;
 
@@ -3268,6 +3394,36 @@ fn find_searches_folded_content_and_a_step_expands_the_fold() {
     press(&mut app, &keymap, KeyCode::Up);
     assert!(app.visible.len() > before, "the step expanded the fold");
     assert!(app.visible[app.diff_cursor].text().contains("total = 0"), "the cursor lands on it");
+
+    // Opened by hand, the fold's marker is a row of its own; the next step still lands true.
+    press(&mut app, &keymap, KeyCode::Down);
+    assert!(app.visible[app.diff_cursor].text().contains("last = total"), "counts the marker");
+}
+
+#[test]
+fn find_steps_land_on_their_rows_in_whole_file_view() {
+    use std::fmt::Write as _;
+    let r = Repo::init();
+    let mut base = String::from("total = 0\n");
+    for i in 0..10 {
+        writeln!(base, "filler{i}").unwrap();
+    }
+    base.push_str("last = 1\n");
+    r.write("m.rs", &base);
+    r.commit_all("init");
+    r.write("m.rs", &base.replace("last = 1", "last = total"));
+    let mut app = app_on(&r);
+    let keymap = Keymap::default();
+    app.focus = Focus::Diff;
+
+    open_find(&mut app, &keymap);
+    find_type(&mut app, &keymap, "total");
+    assert_eq!(app.find_count().unwrap().1, 2);
+    app.diff_cursor = app.visible.len() - 1;
+    press(&mut app, &keymap, KeyCode::Up);
+    assert!(app.visible[app.diff_cursor].text().contains("total = 0"), "the unfolded head");
+    press(&mut app, &keymap, KeyCode::Down);
+    assert!(app.visible[app.diff_cursor].text().contains("last = total"), "the change");
 }
 
 #[test]
@@ -3490,7 +3646,7 @@ fn the_comments_tab_acts_through_the_rebindable_keys() {
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "note");
     let keymap = Keymap::resolve(&[
-        (Action::Delete, vec![Key::plain('a')]),
+        (Action::Delete, vec![Key::plain('D')]),
         (Action::OpenComment, vec![Key::plain('o')]),
     ])
     .unwrap();
@@ -3503,7 +3659,7 @@ fn the_comments_tab_acts_through_the_rebindable_keys() {
     press(&mut app, &keymap, KeyCode::Char('o'));
     assert_eq!(app.tab, Tab::AllFiles, "the rebound key opens the comment");
     press(&mut app, &keymap, KeyCode::Char('3'));
-    press(&mut app, &keymap, KeyCode::Char('a'));
+    press(&mut app, &keymap, KeyCode::Char('D'));
     press(&mut app, &keymap, KeyCode::Enter);
     assert!(app.store.is_empty(), "the rebound `delete` acts on the selected card");
 }
@@ -3724,7 +3880,7 @@ fn diff_preview_entry_falls_back_to_the_top_with_no_current_line_above() {
     r.write("doc.md", &body);
     r.commit_all("init");
     r.write("doc.md", &format!("{body}tail\n")); // append past the context margin
-    let mut app = app_on(&r);
+    let mut app = folded_app_on(&r);
     assert_eq!(app.diff_path.as_deref(), Some("doc.md"));
     app.note_diff_width(80);
     app.focus = Focus::Diff;
@@ -3740,7 +3896,7 @@ fn diff_preview_entry_falls_back_to_the_top_with_no_current_line_above() {
     // Expanding the fold, then a preview round-trip, leaves the fold expanded — a return
     // in the Diff view never disturbs the folds.
     app.toggle_preview();
-    expand_fold(&mut app);
+    app.toggle_fold();
     let expanded = app.visible.len();
     assert!(expanded > 1, "the leading fold expanded into rows");
     app.toggle_preview();

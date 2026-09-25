@@ -1880,7 +1880,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let gutter_w = gutter_for(&app.diff);
-    let expand_hint = app.keymap().hint(crate::keymap::Action::Expand).label();
+    let fold_hint = app.keymap().hint(crate::keymap::Action::Activate).label();
     let layout = RowLayout {
         gutter_w,
         width,
@@ -1892,7 +1892,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
             .find
             .as_ref()
             .map(|f| (f.query.as_str(), crate::app::find_case_sensitive(&f.query))),
-        expand_hint: &expand_hint,
+        fold_hint: &fold_hint,
     };
     let (lo, hi) = app.selection_range();
     let selecting = app.focus == Focus::Diff && app.select_anchor.is_some();
@@ -2000,11 +2000,11 @@ fn gutter_prefix_width(gutter_w: usize) -> usize {
     1 + gutter_w + 1
 }
 
-/// How many display rows a row needs: 1 for a fold or with wrap off, else the number of
+/// How many display rows a row needs: 1 for a fold marker or with wrap off, else the number of
 /// word-wrapped segments its (tab-expanded) content fills. Shares [`wrap_segments`] with
 /// the renderer so per-row geometry stays aligned with what gets painted.
 fn row_height(row: &Row, gutter_w: usize, width: usize, wrap: bool) -> usize {
-    if !wrap || matches!(row, Row::Fold { .. }) {
+    if !wrap || !row.is_content() {
         return 1;
     }
     let code_width = width.saturating_sub(gutter_prefix_width(gutter_w)).max(1);
@@ -2026,8 +2026,8 @@ struct RowLayout<'a> {
     /// The in-file find query and its smart-case flag while the band is open, so every visible
     /// row lights its matches.
     find: Option<(&'a str, bool)>,
-    /// The `expand` hint the cursor's fold row advertises, following a rebind.
-    expand_hint: &'a str,
+    /// The `activate` key the cursor's fold marker advertises, following a rebind.
+    fold_hint: &'a str,
 }
 
 /// A row's per-row highlight state.
@@ -2049,13 +2049,19 @@ struct RowState {
 /// into `code_width`-wide rows; a continuation row carries a blank gutter so numbers
 /// stay aligned. With wrap off, the line is one row scrolled by `h_scroll`.
 fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'static>> {
-    let RowLayout { gutter_w, width, h_scroll, wrap, focused, pal, find, expand_hint } = layout;
+    let RowLayout { gutter_w, width, h_scroll, wrap, focused, pal, find, fold_hint } = layout;
     let RowState { cursor, selected, hovered, pushed } = state;
-    if let Row::Fold { .. } = row {
+    // The arrows are the file tree's folder arrows: `▸` closed, `▾` open.
+    let marker = match row {
+        Row::Fold { lines } => Some(('▸', lines.len(), "hidden", "expand")),
+        Row::Shown { lines, .. } => Some(('▾', *lines, "shown", "hide")),
+        _ => None,
+    };
+    if let Some((arrow, n, status, action)) = marker {
         let label = if cursor {
-            format!("  ⋯  {} unmodified lines — {expand_hint} expand", row.hidden())
+            format!("  {arrow}  {n} unmodified lines {status} — {fold_hint} {action}")
         } else {
-            format!("  ⋯  {} unmodified lines", row.hidden())
+            format!("  {arrow}  {n} unmodified lines {status}")
         };
         // Without a bar fill, a resting fold is faint and a rule runs out its row, so it still
         // reads as a divider rather than a line of code.
@@ -2679,7 +2685,10 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::DeleteComment => (hint(K::Delete), "delete"),
         A::OpenInFiles => (hint(K::OpenComment), "open in files"),
         A::JumpComment => (format!("{}/{}", hint(K::NextComment), hint(K::PrevComment)), "jump"),
-        A::ExpandFold => (hint(K::Expand), "expand fold"),
+        A::ToggleFold => {
+            let shown = matches!(app.visible.get(app.diff_cursor), Some(Row::Shown { .. }));
+            (hint(K::Activate), if shown { "hide fold" } else { "expand fold" })
+        }
         // The armed crossing is keyed to the hunk step that armed it, so a rebound `next-hunk`
         // is the key the hint shows.
         A::CrossFile { forward: true } => (hint(K::NextHunk), "next file"),
@@ -2746,6 +2755,9 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Search => (hint(K::Search), "search"),
         A::Find => (hint(K::Find), "find"),
         A::Wrap => (hint(K::Wrap), if app.wrap { "unwrap" } else { "wrap" }),
+        A::WholeFile => {
+            (hint(K::WholeFile), if app.whole_file { "fold lines" } else { "all lines" })
+        }
         A::Theme => (hint(K::Theme), "theme"),
         A::CloseThemePicker => (format!("esc/{}", hint(K::Theme)), "close"),
         A::ThemeSide => ("←→".into(), "dark/light"),
@@ -2966,6 +2978,8 @@ fn footer_row1(app: &App, w: usize) -> (Vec<Span<'static>>, Vec<FooterAction>) {
 
     // The cursor's actions, packed until one would crowd `send` and the `?` off the line; the rest
     // spill to the `do` band.
+    let (late, do_acts): (Vec<FooterAction>, Vec<FooterAction>) =
+        do_acts.into_iter().partition(|a| a.yields_to_sends());
     let mut overflow = Vec::new();
     let mut trimming = false;
     for a in do_acts {
@@ -2992,6 +3006,19 @@ fn footer_row1(app: &App, w: usize) -> (Vec<Span<'static>>, Vec<FooterAction>) {
             used += ew;
             extra_sends.push(a);
         }
+    }
+
+    // A view action takes only the room every `send` left, still painted ahead of them.
+    for a in late {
+        let ew = entry_width(app, a);
+        if trimming || used + ew + send_w + status_w + reserve > w {
+            trimming = true;
+            overflow.push(a);
+            continue;
+        }
+        used += ew;
+        spans.push(Span::styled(SEP, Style::default().fg(p.dim2)));
+        spans.extend(action_entry(app, a, Band::Do));
     }
 
     // `send` closes the actions and never drops.
@@ -3211,7 +3238,7 @@ fn paint_card(
         focused: true,
         pal: p,
         find: None,
-        expand_hint: "",
+        fold_hint: "",
     };
     let state = RowState { cursor: false, selected: false, hovered: false, pushed: false };
     let mut rows: Option<((bool, usize), Vec<Line<'static>>)> = None;

@@ -139,6 +139,15 @@ pub fn app_on(repo: &Repo) -> App {
     app
 }
 
+/// [`app_on`] with whole-file view off, as `whole_file = false` starts it: the Changes diff
+/// shows only the changed regions, unchanged stretches folded.
+pub fn folded_app_on(repo: &Repo) -> App {
+    let mut app = App::new(repo.path_buf(), Scope::Uncommitted, None);
+    app.whole_file = false;
+    app.reload().unwrap();
+    app
+}
+
 pub fn typed(app: &mut App, text: &str) {
     for ch in text.chars() {
         app.input_push(ch);

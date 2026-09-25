@@ -11,7 +11,7 @@ mouse handling, syntax highlighting and diff engine are his work.
 
 Early. The fork has herdr, the PR tab, the `last turn` scope and the agent-send export
 removed, and comments are written into the files themselves. Still to come from the design
-doc: the whole-repo comment sweep, the whole-file view, and the terminal-palette colour model.
+doc: the whole-repo comment sweep and the terminal-palette colour model.
 See `diff-reckoner-design-doc.md`.
 
 ## Comments
@@ -62,6 +62,12 @@ Requires git on `PATH`, a truecolor terminal, macOS or Linux.
 | `Uncommitted` | worktree vs HEAD, including untracked |
 | `Branch` | vs merge-base with the base branch |
 | `Commits` | a picked contiguous run, `A^`..`B` |
+
+The Changes tab shows the whole file, changes in place. `a` switches to the changed regions
+only, each unchanged stretch folded to a `▸ N unmodified lines hidden` marker. `enter` or a
+click on it opens the lines below it, and the marker then reads `▾ N unmodified lines shown`;
+`enter` again hides them. `a` again shows every line, and the folds you opened stay open.
+`whole_file = false` in `config.toml` starts folded. `]`/`[` step between changes either way.
 
 ## Themes
 

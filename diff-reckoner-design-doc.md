@@ -1,7 +1,8 @@
 # Diff Reckoner — design doc
 
 **Status:** design agreed 2026-09-22. Implemented: §1.1 (the strip), §3 (in-file comments),
-§5.3 (the Comments tab), §6 (outstanding-comment indicators), §8 (export).
+§5.1 (the Changes tab), §5.3 (the Comments tab), §6 (outstanding-comment indicators),
+§8 (export).
 
 A standalone terminal diff reviewer. You read a change, drop review comments
 into the code, and hand the lot to an agent to address. Forked from
@@ -167,7 +168,17 @@ selected file.
 
 **Whole-file view** is on by default. When on, the entire file is rendered and
 scrollable, with no folding. When off, only the changed regions show, with
-reviewr's existing fold/expand behaviour for unchanged stretches. `w` toggles.
+reviewr's existing fold/expand behaviour for unchanged stretches. `a` (all lines)
+toggles; `w` stays line wrap. The setting is global, not per file.
+`whole_file = false` in the config file sets the startup default; the key never
+writes it. Folds opened by hand stay open across a toggle. The cursor keeps its
+source line, and the view keeps it at the same place on screen.
+
+With whole-file view off, a folded stretch is one `▸ N unmodified lines hidden`
+marker. `enter` (or a click) opens it in place: the marker stays, reading
+`▾ N unmodified lines shown`, with the lines below it, and `enter` on it hides them
+again. The arrow keys never fold. A selection stops at a hidden marker but runs
+across a shown one, since it hides nothing. Whole-file view shows no markers at all.
 
 `]` and `[` jump to the next and previous change within the file.
 

@@ -530,6 +530,17 @@ enum FindHit {
     Folded { anchor: u32, new_no: u32 },
 }
 
+/// How a fold in `diff.rows` lays out in `visible`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FoldLayout {
+    /// One `Fold` marker row, its lines hidden.
+    Collapsed,
+    /// Opened by hand: a `Shown` marker over its lines, this the fold's anchor.
+    Marked(u32),
+    /// Whole-file view: its lines alone, no marker.
+    Bare,
+}
+
 /// The char-index ranges of every non-overlapping occurrence of `query` in `text`, honoring
 /// `case_sensitive` (pass [`find_case_sensitive`]'s result for smart-case). Char indices, so the
 /// diff renderer overlays the highlight the same way it does word emphasis.
@@ -571,7 +582,9 @@ pub enum FooterAction {
     /// Open the Comments tab's selected comment in `All files`, the cursor on it.
     OpenInFiles,
     JumpComment,
-    ExpandFold,
+    /// Open or hide the fold under the cursor; the label names the destination (`enter expand`
+    /// on a hidden fold, `enter hide` on a shown one).
+    ToggleFold,
     /// Take the armed crossing: the hunk step that armed it leaves the file when pressed again.
     /// The direction names the destination and picks the key (`] next file`, `[ prev file`).
     CrossFile {
@@ -607,6 +620,8 @@ pub enum FooterAction {
     /// Visible, it waits in the `go` band; hidden, it joins row 1.
     NavigatorHide,
     Wrap,
+    /// Toggle whole-file view; the label names the destination (`a fold lines` / `a all lines`).
+    WholeFile,
     /// Open the theme picker.
     Theme,
     /// The theme picker's own bar: save the highlight, close, move up and down a side, and
@@ -647,6 +662,15 @@ pub enum FooterAction {
     Refresh,
     Tabs,
     Quit,
+}
+
+impl FooterAction {
+    /// Whether this `Do` action yields row 1 to every `send`, not just the first: it acts on the
+    /// view, not on the cursor, so it is the first to move into the `?` panel.
+    #[must_use]
+    pub fn yields_to_sends(self) -> bool {
+        self == Self::WholeFile
+    }
 }
 
 /// Where a footer action sits: on row 1 (`Primary`, `Send`, or a `Do` cursor action), or in one of
@@ -745,6 +769,9 @@ pub struct App {
     pub h_scroll: usize,
     /// Whether long diff lines wrap (default) or are scrolled horizontally.
     pub wrap: bool,
+    /// Whether the Changes diff shows every line (default) or only the changed regions, with
+    /// unchanged stretches folded. Global, not per file; the File view has no folds either way.
+    pub whole_file: bool,
     /// Whether the markdown preview is open for the active file tab's file. Both file tabs
     /// render it; the flag is per file tab and resets on a file change.
     /// Only the armed toggle — `preview_active()` is the honest on-screen predicate.
@@ -951,6 +978,7 @@ impl App {
             diff_scroll: 0,
             h_scroll: 0,
             wrap: true,
+            whole_file: true,
             preview: false,
             preview_scroll: 0,
             preview_text: String::new(),
@@ -1230,6 +1258,8 @@ impl App {
         }
         // The footer expansion is one global toggle, carried regardless of the recovered mode
         self.keys_expanded = old.keys_expanded;
+        // So is whole-file view: a recovery is not the user's input, so it never flips it
+        self.whole_file = old.whole_file;
         // The commit pick is session memory like the comments: replaced, never cleared
         self.commit_pick = old.commit_pick.take();
         self.navigator_side_pct = old.navigator_side_pct;
@@ -1707,50 +1737,127 @@ impl App {
         self.select_anchor = self.select_anchor.map(|a| a.min(last));
     }
 
-    /// Flatten `diff.rows` into `visible`: an expanded fold becomes its lines, a
-    /// collapsed fold stays a single marker row.
+    /// Flatten `diff.rows` into `visible`, each fold laid out by [`Self::fold_layout`].
     fn rebuild_visible(&mut self) {
         self.visible = self
             .diff
             .rows
             .iter()
-            .flat_map(|row| match row {
-                Row::Fold { lines }
-                    if row.fold_anchor().is_some_and(|a| self.expanded_folds.contains(&a)) =>
-                {
-                    lines.clone()
+            .flat_map(|row| match (row, self.fold_layout(row)) {
+                (Row::Fold { lines }, Some(FoldLayout::Bare)) => lines.clone(),
+                (Row::Fold { lines }, Some(FoldLayout::Marked(anchor))) => {
+                    let marker = Row::Shown { anchor, lines: lines.len() };
+                    std::iter::once(marker).chain(lines.iter().cloned()).collect()
                 }
                 _ => vec![row.clone()],
             })
             .collect();
     }
 
-    /// Expand the fold under the cursor, revealing its hidden lines. Expansion is
-    /// permanent for the session — an expand is taken as intentional, so there is no
-    /// collapse-back.
-    /// Expand the fold under the cursor, keeping the viewport visually still. Where the fold
-    /// sits decides which way it grows: a fold in the top half of the diff expands upward (the
-    /// lines below it hold their screen position); one in the bottom half expands downward (the
-    /// lines above hold theirs). `heights`/`viewport` are this frame's pre-expand diff geometry.
-    pub fn expand_fold(&mut self, heights: &[usize], viewport: usize) {
-        let fold_idx = self.diff_cursor;
-        let Some(anchor) = self.visible.get(fold_idx).and_then(Row::fold_anchor) else {
-            return;
-        };
-        // Expanding replaces the 1 fold row with N context rows; rows below it shift by N-1.
-        let shift = self.visible[fold_idx].hidden().saturating_sub(1);
-        // Display rows between the viewport top and the fold; < half ⇒ top half. When the fold
-        // is wheeled above the viewport (fold_idx < diff_scroll), the range is empty → above 0 →
-        // top half, which is correct: the inserted rows land above the viewport, so advancing
-        // diff_scroll by `shift` holds the visible content in place.
-        let above: usize = heights.get(self.diff_scroll..fold_idx).map_or(0, |s| s.iter().sum());
-        let top_half = above < viewport / 2;
-        self.expanded_folds.insert(anchor);
-        self.rebuild_visible();
-        if top_half {
-            self.diff_scroll += shift; // hold the content below the fold; grow upward
+    /// How a `diff.rows` fold lays out in `visible`; `None` for any other row. Whole-file view
+    /// opens every fold without touching `expanded_folds`, so the folds opened by hand come
+    /// back when it is turned off.
+    fn fold_layout(&self, row: &Row) -> Option<FoldLayout> {
+        let anchor = row.fold_anchor()?;
+        Some(if self.whole_file {
+            FoldLayout::Bare
+        } else if self.expanded_folds.contains(&anchor) {
+            FoldLayout::Marked(anchor)
+        } else {
+            FoldLayout::Collapsed
+        })
+    }
+
+    /// Each visible row's index in `diff.rows` with every fold open: its source position,
+    /// the identity a row keeps across a fold opening or closing. A fold marker holds its
+    /// first hidden line's.
+    fn source_positions(&self) -> Vec<usize> {
+        let mut out = Vec::with_capacity(self.visible.len());
+        let mut at = 0;
+        for row in &self.diff.rows {
+            let n = row.lines().len();
+            match self.fold_layout(row) {
+                Some(FoldLayout::Bare) => out.extend(at..at + n),
+                Some(FoldLayout::Marked(_)) => out.extend(std::iter::once(at).chain(at..at + n)),
+                Some(FoldLayout::Collapsed) | None => out.push(at),
+            }
+            at += n;
         }
-        // bottom half: leave diff_scroll — the content above the fold stays put, grow downward
+        out
+    }
+
+    /// `whole-file`: show every line of the Changes diff, or fold its unchanged stretches.
+    /// Inert off the Changes tab and in the preview. The cursor keeps its source line, and
+    /// the row the view is anchored on — the cursor when it is on screen, else the top row —
+    /// keeps its place on screen. `heights`/`viewport` are this frame's geometry before the
+    /// toggle; `measure` gives the row heights after it.
+    pub fn toggle_whole_file(
+        &mut self,
+        heights: &[usize],
+        viewport: usize,
+        measure: impl FnOnce(&Self) -> Vec<usize>,
+    ) {
+        if self.tab != Tab::Changes || self.preview_active() {
+            return;
+        }
+        let before = self.source_positions();
+        let rows_above =
+            |to: usize| heights.get(self.diff_scroll..to).map_or(0, |s| s.iter().sum());
+        let cursor_shown =
+            self.diff_cursor >= self.diff_scroll && rows_above(self.diff_cursor + 1) <= viewport;
+        let anchor = if cursor_shown { self.diff_cursor } else { self.diff_scroll };
+        let offset = rows_above(anchor);
+        let at = |v: usize| before.get(v).copied();
+        let (cursor, pinned, select) =
+            (at(self.diff_cursor), at(anchor), self.select_anchor.and_then(at));
+
+        self.whole_file = !self.whole_file;
+        self.rebuild_visible();
+        if self.visible.is_empty() {
+            return;
+        }
+        let after = self.source_positions();
+        // The visible row holding source position `p`: the last one starting at or before it.
+        let find = |p: usize| after.partition_point(|&s| s <= p).saturating_sub(1);
+        self.diff_cursor = cursor.map_or(0, find);
+        // A selection never holds a fold: one whose anchor folded away has nothing left on
+        // screen to select, and one a fold closed inside stops shy of it.
+        self.select_anchor = select.map(find).filter(|&a| self.visible[a].is_content());
+        if let Some(a) = self.select_anchor {
+            self.diff_cursor = self.fold_clamped(a, self.diff_cursor);
+        }
+        let anchor = pinned.map_or(0, find);
+        let heights = measure(self);
+        let mut scroll = anchor;
+        let mut above = 0;
+        while scroll > 0 && above + heights[scroll - 1] <= offset {
+            scroll -= 1;
+            above += heights[scroll];
+        }
+        self.diff_scroll = scroll;
+    }
+
+    /// Open the fold marker under the cursor, or hide the lines of an opened one. The marker
+    /// keeps its row and its place on screen, its lines opening and closing below it; a
+    /// marker wheeled above the viewport moves the scroll with it, so the view holds still.
+    /// Inert during a selection, which a closing fold would cut through.
+    pub fn toggle_fold(&mut self) {
+        if self.select_anchor.is_some() {
+            return;
+        }
+        let at = self.diff_cursor;
+        let Some(row) = self.visible.get(at) else { return };
+        let Some(anchor) = row.fold_anchor() else { return };
+        let len = self.visible.len();
+        if matches!(row, Row::Shown { .. }) {
+            self.expanded_folds.remove(&anchor);
+        } else {
+            self.expanded_folds.insert(anchor);
+        }
+        self.rebuild_visible();
+        if at < self.diff_scroll {
+            self.diff_scroll = (self.diff_scroll + self.visible.len()).saturating_sub(len);
+        }
     }
 
     /// The old and new content of `file` for the current scope: old from `HEAD` (or the
@@ -2693,6 +2800,8 @@ impl App {
             }
         } else if self.tab.is_file_tab() && self.focus == Focus::Files {
             self.toggle_focus();
+        } else if self.tab.is_file_tab() && self.on_fold() && !self.preview_active() {
+            self.toggle_fold();
         } else if self.comment_claims_edit() {
             self.edit_comment();
         }
@@ -2777,11 +2886,12 @@ impl App {
             && self.file_rows.get(self.file_cursor).is_some_and(|r| r.dir_path().is_some())
     }
 
-    /// Whether the diff cursor is on a fold row — the row `→` expands (elsewhere `→` scrolls
-    /// the diff sideways). Folds are expand-only, so `←` never collapses one.
+    /// Whether the diff cursor is on a fold marker, collapsed or opened — the row `enter`
+    /// toggles. Not during a selection, which holds the folds still.
     pub fn on_fold(&self) -> bool {
         self.focus == Focus::Diff
             && self.visible.get(self.diff_cursor).and_then(Row::fold_anchor).is_some()
+            && self.select_anchor.is_none()
     }
 
     /// Expand the directory under the cursor (`→`); a no-op if it is a file or already open.
@@ -2860,17 +2970,15 @@ impl App {
         }
     }
 
-    /// Clamp `target` so the inclusive range from `anchor` to `target` crosses no fold: a
-    /// selection treats a fold as a hard boundary, so its line range and snippet always agree
+    /// Clamp `target` so the inclusive range from `anchor` to `target` crosses no collapsed fold:
+    /// a selection treats one as a hard boundary, so its line range and snippet always agree
     /// (never bracketing hidden lines the snippet omits). Stops the moving end shy of the fold.
+    /// An opened fold's `Shown` marker hides nothing, so a selection runs across it.
     fn fold_clamped(&self, anchor: usize, target: usize) -> usize {
         if target > anchor {
-            (anchor + 1..=target).find(|&i| !self.visible[i].is_content()).map_or(target, |i| i - 1)
+            (anchor + 1..=target).find(|&i| self.visible[i].hidden() > 0).map_or(target, |i| i - 1)
         } else {
-            (target..anchor)
-                .rev()
-                .find(|&i| !self.visible[i].is_content())
-                .map_or(target, |i| i + 1)
+            (target..anchor).rev().find(|&i| self.visible[i].hidden() > 0).map_or(target, |i| i + 1)
         }
     }
 
@@ -3816,9 +3924,9 @@ impl App {
         let mut cursor_rank = 0usize;
         let mut on_match = false;
         for row in &self.diff.rows {
-            let expanded = row.fold_anchor().is_some_and(|a| self.expanded_folds.contains(&a));
+            let layout = self.fold_layout(row);
             match row {
-                Row::Fold { lines } if !expanded => {
+                Row::Fold { lines } if layout == Some(FoldLayout::Collapsed) => {
                     // The collapsed marker sits at `vis`; its lines are hidden, still searched.
                     if vis == self.diff_cursor {
                         cursor_rank = hits.len();
@@ -3835,7 +3943,15 @@ impl App {
                     vis += 1;
                 }
                 Row::Fold { lines } => {
-                    // Expanded: its lines are visible rows, inline at `vis`.
+                    // Open: its lines are visible rows, inline at `vis`, under the `Shown`
+                    // marker when it was opened by hand.
+                    if matches!(layout, Some(FoldLayout::Marked(_))) {
+                        if vis == self.diff_cursor {
+                            cursor_rank = hits.len();
+                            on_match = false;
+                        }
+                        vis += 1;
+                    }
                     for line in lines {
                         let m = is_hit(line);
                         if vis == self.diff_cursor {
@@ -4343,7 +4459,7 @@ impl App {
                 out.push((A::ScopeOther, Primary));
             }
         } else if self.on_fold() {
-            out.push((A::ExpandFold, Primary));
+            out.push((A::ToggleFold, Primary));
         } else if self.select_anchor.is_some() {
             // A `commits` diff shows a commit's lines, which no comment can be written into.
             if self.shows_worktree_lines() {
@@ -4381,6 +4497,12 @@ impl App {
                 .position(|&(a, band)| band == Do && a == A::NavigatorHide)
                 .unwrap_or(out.len());
             out.insert(at, (A::EditFile, Do));
+        }
+
+        // Whole-file view follows `toggle_whole_file`'s own reach: a Changes diff, not a preview.
+        // It closes row 1's actions, so a narrow row trims it into the `?` panel first.
+        if self.tab == Tab::Changes && !self.preview_active() && !self.visible.is_empty() {
+            out.push((A::WholeFile, Do));
         }
 
         // An armed crossing leads row 1: nothing else on screen says the next press leaves the
