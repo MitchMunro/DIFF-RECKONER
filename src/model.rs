@@ -147,7 +147,7 @@ impl Comment {
 
     /// What the comment covers, for its box title: see [`target_label`]. The anchor is the
     /// first line below the tag lines.
-    pub fn target_label(&self) -> String {
+    pub fn target_label(&self) -> Option<String> {
         target_label(self.end + 1, self.span, self.deleted.as_deref())
     }
 
@@ -208,16 +208,17 @@ impl CommentStore {
     }
 }
 
-/// What a comment covers, as its box title names it: `ln: 141` or `ln: 141 - 153` for the
-/// surviving lines from `first` down, `deleted: "..."` or `deleted 3 lines: "..."` for a
-/// comment on a deletion, whose lines have no number in the file.
-pub fn target_label(first: u32, span: u32, deleted: Option<&str>) -> String {
-    match (deleted, span) {
+/// What a comment covers, as its box title names it: `ln: 141 - 153` for the surviving lines
+/// from `first` down, `deleted: "..."` or `deleted 3 lines: "..."` for a comment on a
+/// deletion, whose lines have no number in the file. A comment on one surviving line names
+/// nothing: the line under its box is the one.
+pub fn target_label(first: u32, span: u32, deleted: Option<&str>) -> Option<String> {
+    Some(match (deleted, span) {
         (Some(d), 1) => format!("deleted: \"{d}\""),
         (Some(d), n) => format!("deleted {n} lines: \"{d}\""),
-        (None, 1) => format!("ln: {first}"),
+        (None, 1) => return None,
         (None, n) => format!("ln: {first} - {}", first + n - 1),
-    }
+    })
 }
 
 fn sort(comments: &mut [Comment]) {
@@ -285,10 +286,13 @@ mod tests {
     #[test]
     fn target_label_names_the_covered_lines() {
         use super::target_label;
-        assert_eq!(target_label(141, 1, None), "ln: 141");
-        assert_eq!(target_label(141, 13, None), "ln: 141 - 153");
-        assert_eq!(target_label(9, 1, Some("gone();")), "deleted: \"gone();\"");
-        assert_eq!(target_label(9, 3, Some("gone();")), "deleted 3 lines: \"gone();\"");
+        assert_eq!(target_label(141, 1, None), None);
+        assert_eq!(target_label(141, 13, None).as_deref(), Some("ln: 141 - 153"));
+        assert_eq!(target_label(9, 1, Some("gone();")).as_deref(), Some("deleted: \"gone();\""));
+        assert_eq!(
+            target_label(9, 3, Some("gone();")).as_deref(),
+            Some("deleted 3 lines: \"gone();\"")
+        );
     }
 
     #[test]

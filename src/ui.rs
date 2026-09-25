@@ -1919,7 +1919,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     // a contiguous run. The cursor row is always marked, dimmed while the pane is unfocused,
     // exactly as the file list marks its own.
     let mut row_cache: Option<(usize, Vec<Line>)> = None;
-    let pushed = pushed_row(app);
+    let shift = app.pending_shift();
     let dress = row_dress(app);
     let mut line_for = |slot: &Slot| -> Line<'static> {
         match *slot {
@@ -1929,7 +1929,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
                         cursor: row == app.diff_cursor,
                         selected: selecting && row >= lo && row <= hi,
                         hovered: hovered_row == Some(row),
-                        pushed: pushed == Some(row),
+                        shift,
                     };
                     row_cache = Some((row, render_row(&app.visible[row], layout, state)));
                 }
@@ -1937,7 +1937,8 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
             }
             Slot::Note { row, seg } => {
                 if row_cache.as_ref().is_none_or(|(r, _)| *r != row) {
-                    row_cache = Some((row, render_note_row(app, &dress, row, gutter_w, width)));
+                    row_cache =
+                        Some((row, render_note_row(app, &dress, row, gutter_w, width, shift)));
                 }
                 row_cache.as_ref().and_then(|(_, l)| l.get(seg).cloned()).unwrap_or_default()
             }
@@ -1977,6 +1978,15 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     if finding {
         let band = Rect { y: inner.y + body_h as u16, height: 1, ..inner };
         render_find_band(frame, app, band);
+    }
+}
+
+/// Line `n` as it will be numbered once the comment being composed is saved: `shift` is the
+/// line its tag lines go on and how many they will be.
+fn renumbered(n: u32, shift: Option<(u32, u32)>) -> u32 {
+    match shift {
+        Some((from, by)) if n >= from => n + by,
+        _ => n,
     }
 }
 
@@ -2039,9 +2049,9 @@ struct RowState {
     /// Whether the pointer hovers this row — its change bar cell shows the gutter `+`
     /// Always false on a PR snippet, whose rows take no comments.
     hovered: bool,
-    /// Whether the comment being composed goes above this row, so its number will move —
-    /// marked `*` beside it.
-    pushed: bool,
+    /// While a new comment is composed, the line its tag lines go on and how many they will
+    /// be: rows from that line on are numbered as they will read once it is saved.
+    shift: Option<(u32, u32)>,
 }
 
 /// A diff row as one or more full-width display lines: a left change bar, the line
@@ -2050,7 +2060,7 @@ struct RowState {
 /// stay aligned. With wrap off, the line is one row scrolled by `h_scroll`.
 fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'static>> {
     let RowLayout { gutter_w, width, h_scroll, wrap, focused, pal, find, fold_hint } = layout;
-    let RowState { cursor, selected, hovered, pushed } = state;
+    let RowState { cursor, selected, hovered, shift } = state;
     // The arrows are the file tree's folder arrows: `▸` closed, `▾` open.
     let marker = match row {
         Row::Fold { lines } => Some(('▸', lines.len(), "hidden", "expand")),
@@ -2082,6 +2092,7 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
     // `0` is an unnumbered PR snippet row; file diffs are 1-based.
     let num = row
         .new_no()
+        .map(|n| renumbered(n, shift))
         .or_else(|| row.old_no())
         .filter(|&n| n > 0)
         .map_or(String::new(), |n| n.to_string());
@@ -2155,13 +2166,9 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
                         Span::raw(" "),
                     ]
                 } else {
-                    let mark = if pushed { '*' } else { ' ' };
                     vec![
                         Span::styled(bar, Style::default().fg(bar_color)),
-                        Span::styled(
-                            format!("{num:>gutter_w$}{mark}"),
-                            Style::default().fg(num_color),
-                        ),
+                        Span::styled(format!("{num:>gutter_w$} "), Style::default().fg(num_color)),
                     ]
                 }
             } else {
@@ -2428,9 +2435,17 @@ fn render_note_row(
     i: usize,
     gutter_w: usize,
     width: usize,
+    shift: Option<(u32, u32)>,
 ) -> Vec<Line<'static>> {
     let Dress::Note { comment } = dress[i] else { return Vec::new() };
     let Some(c) = app.store.get(comment) else { return Vec::new() };
+    // A comment below the one being composed reads its numbers as they will be once saved.
+    let moved = shift.map(|_| Comment {
+        start: renumbered(c.start, shift),
+        end: renumbered(c.end, shift),
+        ..c.clone()
+    });
+    let c = moved.as_ref().unwrap_or(c);
     let p = app.palette();
     let focused = app.focus == Focus::Diff;
     let on_it = dress.get(app.diff_cursor) == Some(&dress[i]);
@@ -2477,7 +2492,7 @@ fn note_line(line: &NoteLine, c: &Comment, numbered: bool, b: &NoteBox) -> Line<
     let pad = Span::raw(" ".repeat(b.indent));
     match line {
         NoteLine::Top => {
-            let mut top = format!("┌─{}", box_title(Some(c.target_label())));
+            let mut top = format!("┌─{}", box_title(c.target_label()));
             let fill = b.width.saturating_sub(b.indent + top.width() + 1);
             top.push_str(&"─".repeat(fill));
             top.push('┐');
@@ -3247,7 +3262,7 @@ fn paint_card(
         find: None,
         fold_hint: "",
     };
-    let state = RowState { cursor: false, selected: false, hovered: false, pushed: false };
+    let state = RowState { cursor: false, selected: false, hovered: false, shift: None };
     let mut rows: Option<((bool, usize), Vec<Line<'static>>)> = None;
     // The selection is the comment itself: its box wears the cursor, as the diff's cursor
     // on a tag line does, so `edit` plainly acts on it.

@@ -108,10 +108,34 @@ fn a_new_comment_box_hangs_off_its_line_number_above_the_line_it_pushes_down() {
     // The comment's line number takes the first text row's left side, in the gutter's column.
     assert!(lines[top + 1].starts_with("│   2 Leave a comment…"), "\n{out}");
     assert!(lines[top + 2].starts_with("│   └──"), "\n{out}");
-    // The line the comment goes above sits under the box, its number starred.
-    assert!(lines[top + 3].starts_with("│▌  2*BETA"), "\n{out}");
+    // The line the comment goes above sits under the box, numbered as it will be once its
+    // tag line lands. A one-line comment's title names no line: it is the one under the box.
+    assert!(lines[top + 3].starts_with("│▌  3 BETA"), "\n{out}");
+    assert!(!lines[top].contains("ln:"), "\n{out}");
     // Above the box, the removed line; the added one moved below it.
     assert!(lines[top - 1].starts_with("│▌  2 beta"), "\n{out}");
+}
+
+#[test]
+fn a_draft_renumbers_every_line_below_it_by_its_tag_lines() {
+    let r = Repo::init();
+    r.write("a.rs", "a\nb\nc\nd\n");
+    r.commit_all("init");
+    r.write("a.rs", "a\nB\nc\n// [- REVIEW -] later\nd\n");
+    let mut app = app_on(&r);
+    composing(&mut app);
+    for ch in "one\ntwo".chars() {
+        app.input_push(ch);
+    }
+    let out = render(&app);
+    let has = |s: &str| out.lines().any(|l| l.starts_with(s));
+    // Above the draft nothing moves; below it, each line moves down by the draft's two tag
+    // lines, the resting comment's box included.
+    assert!(has("│   1 a"), "\n{out}");
+    assert!(has("│▌  4 B"), "\n{out}");
+    assert!(has("│   5 c"), "\n{out}");
+    assert!(has("│   ┌─ REVIEW ───"), "\n{out}");
+    assert!(has("│   7 d"), "\n{out}");
 }
 
 #[test]

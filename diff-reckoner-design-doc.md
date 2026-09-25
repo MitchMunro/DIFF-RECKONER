@@ -102,6 +102,10 @@ insert is the normal path, not a special case. The cursor needs no re-anchoring
 either: the comment is inserted directly above the line you were on, so the row
 index you already held now holds the comment.
 
+The composer numbers ahead: while a new comment is drafted, every line below
+it, and its box title, shows the number it will have once the draft's tag
+lines land, so saving moves no number.
+
 ### 3.3 Deleted lines
 
 A removed line has no home in the working tree, and git has no line identity to
@@ -141,7 +145,8 @@ surviving lines spans its surviving lines only. A one-line comment carries no
 marker.
 
 The comment box titles itself with what it covers: `REVIEW ─ ln: 141 - 153`,
-`REVIEW ─ ln: 141`, or `REVIEW ─ deleted 3 lines: "..."` on a deletion.
+or `REVIEW ─ deleted 3 lines: "..."` on a deletion. A comment on one surviving
+line is plain `REVIEW`: that line sits right under the box.
 `enter` on a diff line with no other job starts a selection and a second
 `enter` drops it; `c` comments on it.
 

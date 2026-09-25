@@ -1449,8 +1449,9 @@ fn an_enter_selection_writes_its_span_and_titles_the_box_with_it() {
     let gamma = app.visible.iter().position(|r| r.text() == "gamma").unwrap();
     app.diff_cursor = gamma;
     app.start_comment();
-    // alpha, BETA, gamma survive; the removed `beta` between them is not counted.
-    assert_eq!(app.pending_target().as_deref(), Some("ln: 1 - 3"));
+    // alpha, BETA, gamma survive; the removed `beta` between them is not counted. The title
+    // counts them where they will be once the tag line lands above them, so saving keeps it.
+    assert_eq!(app.pending_target().as_deref(), Some("ln: 2 - 4"));
     typed(&mut app, "all three");
     app.submit_comment();
     assert_eq!(
@@ -1458,7 +1459,10 @@ fn an_enter_selection_writes_its_span_and_titles_the_box_with_it() {
         format!("{}\nalpha\nBETA\ngamma\ndelta\nepsilon\n", tag_line("[SPAN: 3 lines] all three"))
     );
     let c = app.store.get(0).unwrap();
-    assert_eq!((c.span, c.text.as_str(), c.target_label().as_str()), (3, "all three", "ln: 2 - 4"));
+    assert_eq!(
+        (c.span, c.text.as_str(), c.target_label().as_deref()),
+        (3, "all three", Some("ln: 2 - 4"))
+    );
 }
 
 #[test]

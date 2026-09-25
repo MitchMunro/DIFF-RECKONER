@@ -3724,13 +3724,25 @@ impl App {
     /// selection a new one would be written on.
     pub fn pending_target(&self) -> Option<String> {
         match &self.mode {
-            Mode::Composing { editing: Some(c) } => Some(c.target_label()),
+            Mode::Composing { editing: Some(c) } => c.target_label(),
             Mode::Composing { editing: None } => {
                 let (_, at) = self.placement().ok()?;
-                Some(crate::model::target_label(at.before, at.span, at.deleted.as_deref()))
+                let (_, by) = self.pending_shift()?;
+                crate::model::target_label(at.before + by, at.span, at.deleted.as_deref())
             }
             _ => None,
         }
+    }
+
+    /// While a new comment is composed, the line its tag lines go on and how many the draft
+    /// will write, so the diff numbers the lines below as they will read once it is saved.
+    pub fn pending_shift(&self) -> Option<(u32, u32)> {
+        if !matches!(self.mode, Mode::Composing { editing: None }) {
+            return None;
+        }
+        let (_, at) = self.placement().ok()?;
+        let tags = u32::try_from(self.input.lines().count().max(1)).unwrap_or(u32::MAX);
+        Some((at.before, tags))
     }
 
     /// Row indices of the open file's comment lines, for the gutter mark and `n`/`N`.
