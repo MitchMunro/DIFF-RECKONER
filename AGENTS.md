@@ -78,3 +78,7 @@ matches.
   `github_host` / `gitlab_host` / `azure_devops_host`. Nothing reads them. They go when the
   config surface is revisited.
 - `BaseChoice::pr_base` is always `false` now; the base picker's first sort key is inert.
+
+## Test files
+
+Test docs are in `docs/test` . These are to test what a diff or syntax highlighting looks like.  

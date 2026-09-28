@@ -2005,9 +2005,10 @@ fn gutter_for(diff: &FileDiff) -> usize {
     gutter_width(total_lines)
 }
 
-/// The gutter prefix width: the change bar plus the right-aligned line number and a space.
+/// The gutter prefix width: ` 798+│ ` — a lead space, the right-aligned line number, the
+/// status char, the divider, and a space.
 fn gutter_prefix_width(gutter_w: usize) -> usize {
-    1 + gutter_w + 1
+    1 + gutter_w + 3
 }
 
 /// How many display rows a row needs: 1 for a fold marker or with wrap off, else the number of
@@ -2036,7 +2037,7 @@ struct RowLayout<'a> {
     wrap: bool,
     /// Whether the diff pane is focused — dims the cursor row when it is not.
     focused: bool,
-    /// The active palette for the change bars, row tints, and fills.
+    /// The active palette for the status chars, row tints, and fills.
     pal: &'a Palette,
     /// The in-file find query and its smart-case flag while the band is open, so every visible
     /// row lights its matches.
@@ -2051,7 +2052,7 @@ struct RowLayout<'a> {
 struct RowState {
     cursor: bool,
     selected: bool,
-    /// Whether the pointer hovers this row — its change bar cell shows the gutter `+`
+    /// Whether the pointer hovers this row — its number field shows the `[+]` button.
     /// Always false on a PR snippet, whose rows take no comments.
     hovered: bool,
     /// While a new comment is composed, the line its tag lines go on and how many they will
@@ -2059,10 +2060,10 @@ struct RowState {
     shift: Option<(u32, u32)>,
 }
 
-/// A diff row as one or more full-width display lines: a left change bar, the line
-/// number, then syntax-colored code tinted red/green. With wrap on, a long line breaks
-/// into `code_width`-wide rows; a continuation row carries a blank gutter so numbers
-/// stay aligned. With wrap off, the line is one row scrolled by `h_scroll`.
+/// A diff row as one or more full-width display lines: the ` 798+│ ` gutter (line number,
+/// status char, divider), then the code — syntax-colored, red on a deletion, tinted where the
+/// theme fills. With wrap on, a long line breaks into `code_width`-wide rows; a continuation
+/// row blanks the number and status but keeps the divider. With wrap off, the line is one row scrolled by `h_scroll`.
 fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'static>> {
     let RowLayout { gutter_w, width, h_scroll, wrap, focused, pal, find, fold_hint } = layout;
     let RowState { cursor, selected, hovered, shift } = state;
@@ -2074,14 +2075,14 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
     };
     if let Some((arrow, n, status, action)) = marker {
         let label = if cursor {
-            format!("  {arrow}  {n} unmodified lines {status} — {fold_hint} {action}")
+            format!("  {arrow}  {n} lines {status} — {fold_hint} {action}")
         } else {
-            format!("  {arrow}  {n} unmodified lines {status}")
+            format!("  {arrow}  {n} lines {status}")
         };
         // Without a bar fill, a resting fold is faint and a rule runs out its row, so it still
         // reads as a divider rather than a line of code.
         let ruled = !cursor && !pal.fills_bars();
-        let fg = if ruled { pal.dim1 } else { pal.dim0 };
+        let fg = if ruled { pal.dim2 } else { pal.dim0 };
         let mut line = Line::from(Span::styled(label, Style::default().fg(fg)));
         if let Some(pad) = width.checked_sub(line.width()).filter(|p| *p > 0) {
             let rule = if ruled { format!(" {}", "─".repeat(pad - 1)) } else { " ".repeat(pad) };
@@ -2092,7 +2093,10 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
             on_cursor_fill(pal, &mut line.spans);
         }
         let bg = fill.unwrap_or(pal.surface0);
-        return vec![line.style(Style::default().bg(bg).add_modifier(Modifier::BOLD))];
+        // A resting fold is quiet chrome; only the cursor's goes bold.
+        let style = Style::default().bg(bg);
+        let style = if cursor { style.add_modifier(Modifier::BOLD) } else { style };
+        return vec![line.style(style)];
     }
     // `0` is an unnumbered PR snippet row; file diffs are 1-based.
     let num = row
@@ -2103,11 +2107,16 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
         .map_or(String::new(), |n| n.to_string());
     // Numbers sit a step brighter than the dim chrome so they stay legible while read.
     let num_color = pal.dim1;
-    let (bar, bar_color) = match row.marker() {
-        '-' => ("▌", pal.red),
-        '+' => ("▌", pal.green),
-        _ => (" ", pal.dim2),
+    // An edited line's `~` is red on its old half, yellow on its new one.
+    let status = row.status();
+    let status_color = match (status, row.marker()) {
+        ('-', _) | ('~', '-') => pal.red,
+        ('+', _) => pal.green,
+        ('~', _) => pal.yellow,
+        _ => pal.dim2,
     };
+    let status = status.to_string();
+    let divider = Span::styled("│ ", Style::default().fg(pal.dim2));
     // The focused cursor fills its row; an unfocused one keeps the row's own tint and goes bold.
     let cursor_fill = cursor.then(|| pal.cursor_bg(focused)).flatten();
     let row_bg = if cursor_fill.is_some() {
@@ -2134,7 +2143,16 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
     // like word emphasis.
     let hl_ranges =
         find.map(|(q, cs)| crate::app::find_match_ranges(&row.text(), q, cs)).unwrap_or_default();
-    let cells = code_cells(row, emph_on, &hl_ranges);
+    let mut cells = code_cells(row, emph_on, &hl_ranges);
+    // A deleted line drops its syntax colors for red. An edited line's old half emphasizes its
+    // removed words on a red fill under the terminal theme, where they take the ink drawn on
+    // accent fills rather than vanishing red on red.
+    if row.marker() == '-' {
+        let word_fg = if pal.emph_del_bg == pal.red { pal.ink() } else { pal.red };
+        for c in &mut cells {
+            c.fg = if c.emph { word_fg } else { pal.red };
+        }
+    }
 
     let prefix_w = gutter_prefix_width(gutter_w);
     let code_width = width.saturating_sub(prefix_w).max(1);
@@ -2162,32 +2180,32 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
                     // fits, right-aligned like the numbers it covers.
                     let left = gutter_w - 3;
                     vec![
-                        Span::styled(bar, Style::default().fg(bar_color)),
-                        Span::raw(" ".repeat(left)),
+                        Span::raw(" ".repeat(1 + left)),
                         Span::styled(
                             "[+]",
                             Style::default().fg(pal.orange).add_modifier(Modifier::BOLD),
                         ),
-                        Span::raw(" "),
+                        Span::styled(status.clone(), Style::default().fg(status_color)),
+                        divider.clone(),
                     ]
                 } else {
                     vec![
-                        Span::styled(bar, Style::default().fg(bar_color)),
-                        Span::styled(format!("{num:>gutter_w$} "), Style::default().fg(num_color)),
+                        Span::styled(format!(" {num:>gutter_w$}"), Style::default().fg(num_color)),
+                        Span::styled(status.clone(), Style::default().fg(status_color)),
+                        divider.clone(),
                     ]
                 }
             } else {
-                // A continuation row keeps the change bar but blanks the number column.
-                vec![
-                    Span::styled(bar, Style::default().fg(bar_color)),
-                    Span::raw(" ".repeat(prefix_w - 1)),
-                ]
+                // A continuation row blanks the number and status but keeps the divider.
+                vec![Span::raw(" ".repeat(prefix_w - 2)), divider.clone()]
             };
+            let status_at = gutter.len() - 2;
             let mut spans = gutter;
             spans.extend(cells_to_spans(chunk, emph_bg, HlStyle { bg: pal.yellow, fg: pal.ink() }));
             if cursor_fill.is_some() {
-                // The change bar keeps its red or green.
-                on_cursor_fill(pal, &mut spans[1..]);
+                // The status char keeps its red or green.
+                on_cursor_fill(pal, &mut spans[..status_at]);
+                on_cursor_fill(pal, &mut spans[status_at + 1..]);
             }
             let mut line = Line::from(spans);
             if let Some(pad) = width.checked_sub(line.width()).filter(|p| *p > 0) {
@@ -2796,6 +2814,9 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Wrap => (hint(K::Wrap), if app.wrap { "unwrap" } else { "wrap" }),
         A::WholeFile => {
             (hint(K::WholeFile), if app.whole_file { "fold lines" } else { "all lines" })
+        }
+        A::MergeModified => {
+            (hint(K::MergeModified), if app.merge_modified { "show old" } else { "hide old" })
         }
         A::Theme => (hint(K::Theme), "theme"),
         A::CloseThemePicker => (format!("esc/{}", hint(K::Theme)), "close"),

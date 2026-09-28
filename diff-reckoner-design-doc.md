@@ -203,11 +203,20 @@ toggles; `w` stays line wrap. The setting is global, not per file.
 writes it. Folds opened by hand stay open across a toggle. The cursor keeps its
 source line, and the view keeps it at the same place on screen.
 
-With whole-file view off, a folded stretch is one `▸ N unmodified lines hidden`
+With whole-file view off, a folded stretch is one `▸ N lines hidden`
 marker. `enter` (or a click) opens it in place: the marker stays, reading
-`▾ N unmodified lines shown`, with the lines below it, and `enter` on it hides them
+`▾ N lines shown`, with the lines below it, and `enter` on it hides them
 again. The arrow keys never fold. A selection stops at a hidden marker but runs
 across a shown one, since it hides nothing. Whole-file view shows no markers at all.
+
+**Edited lines.** The gutter reads ` 798+│ `: the number, a status char (`+`
+added, `-` deleted, `~` either half of an edited line, blank unchanged), and a
+divider. Deleted code is red. An edited line is a deletion paired with the
+insertion similar enough to be the same line edited; by default both halves show,
+their changed words highlighted. `O` (`merge-modified`) hides the old halves so an
+edit reads as its new line alone. Unlike `whole_file`, the key writes its choice
+to `merge_modified` in the config file, so it holds across sessions. The cursor on
+a hidden old half falls back to the row above it.
 
 `]` and `[` jump to the next and previous change within the file.
 

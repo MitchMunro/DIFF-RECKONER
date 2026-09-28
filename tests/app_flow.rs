@@ -1258,6 +1258,44 @@ fn toggle_whole_file(app: &mut App) {
 }
 
 #[test]
+fn merge_modified_hides_an_edits_old_half_and_saves_the_choice() {
+    let r = Repo::init();
+    r.write("a.rs", "head\nlet x = foo(1);\ntail\n");
+    r.commit_all("init");
+    r.write("a.rs", "head\nlet x = foo(2);\ntail\n");
+    let mut app = app_on(&r);
+    let config_dir = tempfile::tempdir().unwrap();
+    std::fs::write(config_dir.path().join("config.toml"), "theme = \"terminal\"\n").unwrap();
+    app.set_config_dir(Some(config_dir.path().to_path_buf()));
+    let texts =
+        |app: &App| app.visible.iter().map(diff_reckoner::diff::Row::text).collect::<Vec<_>>();
+    let toggle = |app: &mut App| {
+        let heights = vec![1usize; app.visible.len()];
+        app.toggle_merge_modified(&heights, 10, |app| vec![1; app.visible.len()]);
+    };
+    let saved = || {
+        let config = diff_reckoner::config::plugin_config_in(config_dir.path()).unwrap();
+        (config.merge_modified(), config.theme().to_owned())
+    };
+
+    // Both halves show by default.
+    assert!(!app.merge_modified);
+    assert_eq!(texts(&app), ["head", "let x = foo(1);", "let x = foo(2);", "tail"]);
+    app.diff_cursor = 1;
+
+    // Merged, the old half goes; the cursor on it falls back to the row above.
+    toggle(&mut app);
+    assert!(app.merge_modified);
+    assert_eq!(texts(&app), ["head", "let x = foo(2);", "tail"]);
+    assert_eq!(app.diff_cursor, 0);
+    assert_eq!(saved(), (true, "terminal".to_owned()), "saved beside the other settings");
+
+    toggle(&mut app);
+    assert_eq!(texts(&app), ["head", "let x = foo(1);", "let x = foo(2);", "tail"]);
+    assert_eq!(saved(), (false, "terminal".to_owned()));
+}
+
+#[test]
 fn whole_file_view_shows_every_line_and_the_toggle_folds_the_rest() {
     let r = folded_repo();
     let mut app = app_on(&r);
@@ -5153,10 +5191,11 @@ fn sel_mouse(app: &mut App, kind: MouseEventKind, col: u16, row: u16) {
 }
 
 /// The screen cell of `(row, display column)` in the read pane, for a short-lined file where
-/// each row paints one display line: the gutter is one bar cell, a 3-column number, a space.
+/// each row paints one display line: the gutter is a lead space, a 3-column number, the status
+/// char, the divider, and a space.
 fn sel_cell(app: &App, row: usize, display_col: u16) -> (u16, u16) {
     let inner = diff_reckoner::ui::read_inner_rect(SEL_AREA, app);
-    (inner.x + 5 + display_col, inner.y + u16::try_from(row).unwrap())
+    (inner.x + 7 + display_col, inner.y + u16::try_from(row).unwrap())
 }
 
 #[test]
@@ -5321,7 +5360,7 @@ fn a_double_click_copies_the_word_and_settles_its_highlight() {
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| diff_reckoner::ui::render(f, &app)).unwrap();
     let inner = diff_reckoner::ui::read_inner_rect(SEL_AREA, &app);
-    let cell = terminal.backend().buffer().cell((inner.x + 5, inner.y)).unwrap();
+    let cell = terminal.backend().buffer().cell((inner.x + 7, inner.y)).unwrap();
     assert_eq!(cell.style().bg, Some(app.palette().sel_bg));
 
     // Any keypress clears the settled highlight.

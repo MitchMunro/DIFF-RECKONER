@@ -5,7 +5,6 @@
 
 import SwiftUI
 import Combine
-import OSLog
 
 private let logger = Logger(subsystem: "com.example.tasks", category: "TaskStore")
 
@@ -65,7 +64,7 @@ enum TaskStoreError: LocalizedError {
         case .decodingFailed(let error):
             return "Couldn't load tasks: \(error.localizedDescription)"
         case .emptyTitle:
-            return "A task needs a title."
+            return "Every task needs a title before it can be saved."
         }
     }
 }
@@ -91,13 +90,18 @@ final class TaskStore: ObservableObject {
             .filter { filter == nil || $0.priority == filter }
             .sorted { lhs, rhs in
                 if lhs.isDone != rhs.isDone { return !lhs.isDone }
+                if lhs.isOverdue != rhs.isOverdue { return lhs.isOverdue }
                 if lhs.priority != rhs.priority { return lhs.priority.rawValue > rhs.priority.rawValue }
                 return (lhs.dueDate ?? .distantFuture) < (rhs.dueDate ?? .distantFuture)
             }
     }
 
     var overdueCount: Int {
-        tasks.filter(\.isOverdue).count
+        tasks.lazy.filter(\.isOverdue).count
+    }
+
+    var completedCount: Int {
+        tasks.lazy.filter(\.isDone).count
     }
 
     func add(_ title: String, priority: Priority) throws {

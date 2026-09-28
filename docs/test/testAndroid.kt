@@ -31,6 +31,7 @@ enum class Priority(val label: String, val tint: Color) {
     LOW("Low", Color(0xFF2E7D32)),
     MEDIUM("Medium", Color(0xFFEF6C00)),
     HIGH("High", Color(0xFFC62828)),
+    URGENT("Urgent", Color(0xFF6A1B9A)),
 }
 
 // [- REVIEW -] [SPAN: 8 lines] comment
@@ -42,14 +43,14 @@ data class Task(
     val dueAtMillis: Long? = null,
     val isDone: Boolean = false,
 ) {
-    val isOverdue: Boolean
-        get() = !isDone && dueAtMillis?.let { it < System.currentTimeMillis() } == true
+    fun isOverdue(nowMillis: Long = System.currentTimeMillis()): Boolean =
+        !isDone && dueAtMillis?.let { it < nowMillis } == true
 }
 
 sealed interface TasksUiState {
     data object Loading : TasksUiState
     data class Ready(val tasks: List<Task>, val filter: Priority?) : TasksUiState {
-        val overdueCount: Int get() = tasks.count { it.isOverdue }
+        val overdueCount: Int get() = tasks.count { it.isOverdue() }
     }
     data class Error(val message: String) : TasksUiState
 }
@@ -58,6 +59,7 @@ interface TaskRepository {
     fun observe(): Flow<List<Task>>
     suspend fun upsert(task: Task)
     suspend fun delete(id: String)
+    suspend fun clearCompleted(): Int
 }
 
 class InMemoryTaskRepository : TaskRepository {
@@ -73,6 +75,17 @@ class InMemoryTaskRepository : TaskRepository {
     override suspend fun delete(id: String) {
         delay(50)
         tasks.update { it - id }
+    }
+
+    override suspend fun clearCompleted(): Int {
+        delay(50)
+        var removed = 0
+        tasks.update { current ->
+            val kept = current.filterValues { !it.isDone }
+            removed = current.size - kept.size
+            kept
+        }
+        return removed
     }
 }
 

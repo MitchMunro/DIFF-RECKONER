@@ -622,6 +622,8 @@ pub enum FooterAction {
     Wrap,
     /// Toggle whole-file view; the label names the destination (`a fold lines` / `a all lines`).
     WholeFile,
+    /// Toggle the edited-lines view; the label names the destination (`O hide old` / `O show old`).
+    MergeModified,
     /// Open the theme picker.
     Theme,
     /// The theme picker's own bar: save the highlight, close, move up and down a side, and
@@ -778,6 +780,9 @@ pub struct App {
     /// Whether the Changes diff shows every line (default) or only the changed regions, with
     /// unchanged stretches folded. Global, not per file; the File view has no folds either way.
     pub whole_file: bool,
+    /// Whether an edited line shows as its new half alone (`merge-modified`), its old half
+    /// hidden from `visible`. Off by default: both halves show. Global, and saved to the config.
+    pub merge_modified: bool,
     /// Whether the markdown preview is open for the active file tab's file. Both file tabs
     /// render it; the flag is per file tab and resets on a file change.
     /// Only the armed toggle — `preview_active()` is the honest on-screen predicate.
@@ -987,6 +992,7 @@ impl App {
             h_scroll: 0,
             wrap: true,
             whole_file: true,
+            merge_modified: false,
             preview: false,
             preview_scroll: 0,
             preview_text: String::new(),
@@ -1268,6 +1274,7 @@ impl App {
         self.keys_expanded = old.keys_expanded;
         // So is whole-file view: a recovery is not the user's input, so it never flips it
         self.whole_file = old.whole_file;
+        self.merge_modified = old.merge_modified;
         // The commit pick is session memory like the comments: replaced, never cleared
         self.commit_pick = old.commit_pick.take();
         self.navigator_side_pct = old.navigator_side_pct;
@@ -1745,7 +1752,8 @@ impl App {
         self.select_anchor = self.select_anchor.map(|a| a.min(last));
     }
 
-    /// Flatten `diff.rows` into `visible`, each fold laid out by [`Self::fold_layout`].
+    /// Flatten `diff.rows` into `visible`, each fold laid out by [`Self::fold_layout`] and an
+    /// edited line's old half dropped under [`Self::merge_modified`].
     fn rebuild_visible(&mut self) {
         self.visible = self
             .diff
@@ -1757,9 +1765,16 @@ impl App {
                     let marker = Row::Shown { anchor, lines: lines.len() };
                     std::iter::once(marker).chain(lines.iter().cloned()).collect()
                 }
+                _ if self.merged_away(row) => Vec::new(),
                 _ => vec![row.clone()],
             })
             .collect();
+    }
+
+    /// Whether `row` is an edited line's old half the merged view hides. Only a top-level
+    /// `diff.rows` change row can be one; folds hold context alone.
+    fn merged_away(&self, row: &Row) -> bool {
+        self.merge_modified && row.is_modified_old()
     }
 
     /// How a `diff.rows` fold lays out in `visible`; `None` for any other row. Whole-file view
@@ -1787,6 +1802,7 @@ impl App {
             match self.fold_layout(row) {
                 Some(FoldLayout::Bare) => out.extend(at..at + n),
                 Some(FoldLayout::Marked(_)) => out.extend(std::iter::once(at).chain(at..at + n)),
+                None if self.merged_away(row) => {}
                 Some(FoldLayout::Collapsed) | None => out.push(at),
             }
             at += n;
@@ -1795,10 +1811,8 @@ impl App {
     }
 
     /// `whole-file`: show every line of the Changes diff, or fold its unchanged stretches.
-    /// Inert off the Changes tab and in the preview. The cursor keeps its source line, and
-    /// the row the view is anchored on — the cursor when it is on screen, else the top row —
-    /// keeps its place on screen. `heights`/`viewport` are this frame's geometry before the
-    /// toggle; `measure` gives the row heights after it.
+    /// Inert off the Changes tab and in the preview. `heights`/`viewport` are this frame's
+    /// geometry before the toggle; `measure` gives the row heights after it.
     pub fn toggle_whole_file(
         &mut self,
         heights: &[usize],
@@ -1808,6 +1822,42 @@ impl App {
         if self.tab != Tab::Changes || self.preview_active() {
             return;
         }
+        self.relayout(heights, viewport, measure, |app| app.whole_file = !app.whole_file);
+    }
+
+    /// `merge-modified`: show an edited line as its new half alone, or as its old and new
+    /// halves, and save the choice to the config file. Inert where `whole-file` is: every other
+    /// view has no edited lines. Its geometry arguments are [`Self::toggle_whole_file`]'s.
+    pub fn toggle_merge_modified(
+        &mut self,
+        heights: &[usize],
+        viewport: usize,
+        measure: impl FnOnce(&Self) -> Vec<usize>,
+    ) {
+        if self.tab != Tab::Changes || self.preview_active() {
+            return;
+        }
+        self.relayout(heights, viewport, measure, |app| app.merge_modified = !app.merge_modified);
+        let Some(dir) = self.config_dir.clone() else {
+            self.status = "no config directory to save the edited-lines view to".into();
+            return;
+        };
+        if let Err(e) = crate::config::save_merge_modified(&dir, self.merge_modified) {
+            self.status = format!("edited-lines view not saved: {e}");
+        }
+    }
+
+    /// Re-lay `visible` out after `flip` changes how `diff.rows` flattens. The cursor keeps its
+    /// source line, and the row the view is anchored on — the cursor when it is on screen, else
+    /// the top row — keeps its place on screen. A row the new layout hides hands both to the
+    /// nearest row above it.
+    fn relayout(
+        &mut self,
+        heights: &[usize],
+        viewport: usize,
+        measure: impl FnOnce(&Self) -> Vec<usize>,
+        flip: impl FnOnce(&mut Self),
+    ) {
         let before = self.source_positions();
         let rows_above =
             |to: usize| heights.get(self.diff_scroll..to).map_or(0, |s| s.iter().sum());
@@ -1819,7 +1869,7 @@ impl App {
         let (cursor, pinned, select) =
             (at(self.diff_cursor), at(anchor), self.select_anchor.and_then(at));
 
-        self.whole_file = !self.whole_file;
+        flip(self);
         self.rebuild_visible();
         if self.visible.is_empty() {
             return;
@@ -4043,6 +4093,8 @@ impl App {
                         vis += 1;
                     }
                 }
+                // A merged-away old half is no visible row, so find passes over it.
+                content if self.merged_away(content) => {}
                 content => {
                     let m = is_hit(content);
                     if vis == self.diff_cursor {
@@ -4618,6 +4670,13 @@ impl App {
             out.push((A::Find, Go));
         }
         out.push((A::Wrap, Go));
+        // The edited-lines view: `?`-panel only, and only over a Changes diff holding an edit.
+        if self.tab == Tab::Changes
+            && !self.preview_active()
+            && self.diff.rows.iter().any(Row::is_modified_old)
+        {
+            out.push((A::MergeModified, Go));
+        }
         out.push((A::Theme, Go));
         if !self.store.is_empty() {
             out.push((A::Copy, Go));
@@ -5437,9 +5496,9 @@ mod tests {
         app.focus = crate::Focus::Diff;
         let bare = Vec::<Span>::new;
         app.visible = vec![
-            Row::Insertion { new_no: 10, spans: bare(), emphasis: Vec::new() },
-            Row::Deletion { old_no: 11, spans: bare(), emphasis: Vec::new() },
-            Row::Insertion { new_no: 12, spans: bare(), emphasis: Vec::new() },
+            Row::Insertion { new_no: 10, spans: bare(), emphasis: Vec::new(), modified: false },
+            Row::Deletion { old_no: 11, spans: bare(), emphasis: Vec::new(), modified: false },
+            Row::Insertion { new_no: 12, spans: bare(), emphasis: Vec::new(), modified: false },
         ];
         app.diff_cursor = 1;
         app

@@ -174,11 +174,11 @@ mod tests {
     }
 
     fn del(text: &str) -> Row {
-        Row::Deletion { old_no: 1, spans: spans(text), emphasis: vec![] }
+        Row::Deletion { old_no: 1, spans: spans(text), emphasis: vec![], modified: false }
     }
 
     fn ins(text: &str) -> Row {
-        Row::Insertion { new_no: 1, spans: spans(text), emphasis: vec![] }
+        Row::Insertion { new_no: 1, spans: spans(text), emphasis: vec![], modified: false }
     }
 
     fn fold(hidden: usize) -> Row {

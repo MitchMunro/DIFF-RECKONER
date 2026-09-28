@@ -110,10 +110,10 @@ fn a_new_comment_box_hangs_off_its_line_number_above_the_line_it_pushes_down() {
     assert!(lines[top + 2].starts_with("│   └──"), "\n{out}");
     // The line the comment goes above sits under the box, numbered as it will be once its
     // tag line lands. A one-line comment's title names no line: it is the one under the box.
-    assert!(lines[top + 3].starts_with("│▌  3 BETA"), "\n{out}");
+    assert!(lines[top + 3].starts_with("│   3+│ BETA"), "\n{out}");
     assert!(!lines[top].contains("ln:"), "\n{out}");
     // Above the box, the removed line; the added one moved below it.
-    assert!(lines[top - 1].starts_with("│▌  2 beta"), "\n{out}");
+    assert!(lines[top - 1].starts_with("│   2-│ beta"), "\n{out}");
 }
 
 #[test]
@@ -131,11 +131,11 @@ fn a_draft_renumbers_every_line_below_it_by_its_tag_lines() {
     let has = |s: &str| out.lines().any(|l| l.starts_with(s));
     // Above the draft nothing moves; below it, each line moves down by the draft's two tag
     // lines, the resting comment's box included.
-    assert!(has("│   1 a"), "\n{out}");
-    assert!(has("│▌  4 B"), "\n{out}");
-    assert!(has("│   5 c"), "\n{out}");
+    assert!(has("│   1 │ a"), "\n{out}");
+    assert!(has("│   4+│ B"), "\n{out}");
+    assert!(has("│   5 │ c"), "\n{out}");
     assert!(has("│   ┌─ REVIEW ───"), "\n{out}");
-    assert!(has("│   7 d"), "\n{out}");
+    assert!(has("│   7 │ d"), "\n{out}");
 }
 
 #[test]
@@ -300,13 +300,13 @@ fn a_fold_marker_reads_hidden_or_shown_and_names_the_activate_binding() {
     let n = app.visible[app.diff_cursor].hidden();
 
     let out = render(&app);
-    assert!(out.contains(&format!("▸  {n} unmodified lines hidden — enter expand")), "{out}");
+    assert!(out.contains(&format!("▸  {n} lines hidden — enter expand")), "{out}");
     assert!(out.contains("enter expand fold"), "the footer names it too");
     assert!(!out.contains("→ expand"), "no stale arrow hint remains");
 
     app.toggle_fold();
     let out = render(&app);
-    assert!(out.contains(&format!("▾  {n} unmodified lines shown — enter hide")), "{out}");
+    assert!(out.contains(&format!("▾  {n} lines shown — enter hide")), "{out}");
     assert!(out.contains("enter hide fold"), "the footer names the hide");
 
     // A rebound `activate` renames the marker's inline label and the footer hint alike
@@ -1274,10 +1274,10 @@ fn the_comments_tab_shows_each_comment_as_a_card_with_its_context() {
     assert!(out.contains("card note"), "the comment's box:\n{out}");
     // Five lines of the file either side of the tag line, numbered as the file numbers them.
     for n in [2, 6] {
-        assert!(out.contains(&format!("{n} line {n}")), "line {n} above:\n{out}");
+        assert!(out.contains(&format!("{n} │ line {n}")), "line {n} above:\n{out}");
     }
-    assert!(!out.contains(" 1 line 1"), "no more than five above:\n{out}");
-    assert!(out.contains("8 LINE 7") && out.contains("12 line 11"), "five below:\n{out}");
+    assert!(!out.contains(" 1 │ line 1"), "no more than five above:\n{out}");
+    assert!(out.contains("8 │ LINE 7") && out.contains("12 │ line 11"), "five below:\n{out}");
     assert!(out.contains("src/a.rs"), "the navigator lists the file:\n{out}");
     assert!(out.contains("3 Comments (1)"), "the tab carries the count:\n{out}");
 }
@@ -2893,25 +2893,28 @@ fn selection_app() -> (Repo, App) {
 }
 
 #[test]
-fn the_hovered_row_shows_a_plus_in_its_change_bar_cell() {
+fn the_hovered_row_shows_a_plus_button_over_its_number() {
     let (_repo, mut app) = selection_app();
     let area = Rect::new(0, 0, 140, 40);
     let inner = ui::read_inner_rect(area, &app);
 
-    // No hover: the insertion row paints its change bar.
+    // No hover: the insertion row paints its number, then its status char and the divider.
     let buf = render_buffer(&app);
-    assert_eq!(buf.cell((inner.x, inner.y)).unwrap().symbol(), "▌");
+    assert_eq!(buf.cell((inner.x + 3, inner.y)).unwrap().symbol(), "1");
+    assert_eq!(buf.cell((inner.x + 4, inner.y)).unwrap().symbol(), "+");
+    assert_eq!(buf.cell((inner.x + 5, inner.y)).unwrap().symbol(), "│");
 
     // Hovering anywhere on the row puts the `[+]` button over the number field; the
-    // change bar stays, so the diff signal never blinks.
+    // status char stays, so the diff signal never blinks.
     app.hover = Some((inner.x + 8, inner.y));
     let buf = render_buffer(&app);
-    assert_eq!(buf.cell((inner.x, inner.y)).unwrap().symbol(), "▌");
     assert_eq!(buf.cell((inner.x + 1, inner.y)).unwrap().symbol(), "[");
     assert_eq!(buf.cell((inner.x + 2, inner.y)).unwrap().symbol(), "+");
     assert_eq!(buf.cell((inner.x + 3, inner.y)).unwrap().symbol(), "]");
-    // The unhovered row below keeps its bar and number.
-    assert_eq!(buf.cell((inner.x, inner.y + 1)).unwrap().symbol(), "▌");
+    assert_eq!(buf.cell((inner.x + 4, inner.y)).unwrap().symbol(), "+");
+    // The unhovered row below keeps its number and status char.
+    assert_eq!(buf.cell((inner.x + 3, inner.y + 1)).unwrap().symbol(), "2");
+    assert_eq!(buf.cell((inner.x + 4, inner.y + 1)).unwrap().symbol(), "+");
 }
 
 #[test]
@@ -2934,11 +2937,11 @@ fn the_plus_button_right_aligns_in_a_wide_number_field() {
 
     app.hover = Some((inner.x + 8, inner.y));
     let buf = render_buffer(&app);
-    assert_eq!(buf.cell((inner.x, inner.y)).unwrap().symbol(), "▌");
     assert_eq!(buf.cell((inner.x + 1, inner.y)).unwrap().symbol(), " ", "left pad, not `[`");
     assert_eq!(buf.cell((inner.x + 2, inner.y)).unwrap().symbol(), "[");
     assert_eq!(buf.cell((inner.x + 3, inner.y)).unwrap().symbol(), "+");
     assert_eq!(buf.cell((inner.x + 4, inner.y)).unwrap().symbol(), "]");
+    assert_eq!(buf.cell((inner.x + 5, inner.y)).unwrap().symbol(), "+", "the status char");
     // The unhovered row below right-aligns its number in the same field.
     assert_eq!(buf.cell((inner.x + 4, inner.y + 1)).unwrap().symbol(), "2");
 }
@@ -2968,18 +2971,18 @@ fn the_text_selection_highlights_the_dragged_span() {
     };
     // The `b` of beta is selected; the chars before the anchor are not — the first row runs
     // from its start character, not whole.
-    assert!(sel(inner.x + 5 + 6, inner.y));
-    assert!(!sel(inner.x + 5, inner.y));
-    assert!(!sel(inner.x + 5 + 5, inner.y));
+    assert!(sel(inner.x + 7 + 6, inner.y));
+    assert!(!sel(inner.x + 7, inner.y));
+    assert!(!sel(inner.x + 7 + 5, inner.y));
     // Row 1 lies whole between the endpoints: tab expansion through its last char.
-    assert!(sel(inner.x + 5, inner.y + 1));
-    assert!(sel(inner.x + 5 + 6, inner.y + 1));
+    assert!(sel(inner.x + 7, inner.y + 1));
+    assert!(sel(inner.x + 7 + 6, inner.y + 1));
     // Row 2 runs up to its end character: both wide glyphs (each asserted at its first
     // cell — the buffer diff skips a wide char's hidden continuation cell), and nothing
     // past them.
-    assert!(sel(inner.x + 5, inner.y + 2));
-    assert!(sel(inner.x + 5 + 2, inner.y + 2));
-    assert!(!sel(inner.x + 5 + 4, inner.y + 2));
+    assert!(sel(inner.x + 7, inner.y + 2));
+    assert!(sel(inner.x + 7 + 2, inner.y + 2));
+    assert!(!sel(inner.x + 7 + 4, inner.y + 2));
 }
 
 // --- Commit picker and the commits header --------------------
@@ -3392,11 +3395,63 @@ fn follow_terminal_bars_take_no_fill_on_a_dark_terminal() {
     }
     // A resting fold is faint text with a faint rule, never a black band.
     let out = dump(&buf);
-    let y = out.lines().position(|l| l.contains("unmodified lines")).expect("a fold") as u16;
+    let y = out.lines().position(|l| l.contains("lines hidden")).expect("a fold") as u16;
     let row = out.lines().nth(y as usize).unwrap();
-    assert!(row.contains("unmodified lines hidden ─"), "{row}");
-    let x = row.chars().position(|c| c == 'u').unwrap() as u16;
+    assert!(row.contains("lines hidden ─"), "{row}");
+    let x = row.chars().position(|c| c == '▸').unwrap() as u16;
     let cell = buf.cell((x, y)).unwrap();
     assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset), "{cell:?}");
     assert!(cell.modifier.contains(Modifier::DIM) && !cell.modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn the_gutter_marks_each_line_and_deleted_code_is_red() {
+    use ratatui::style::Color;
+    let r = Repo::init();
+    r.write("a.rs", "head\nlet total = compute(a, b);\ngone entirely\ntail\n");
+    r.commit_all("init");
+    r.write("a.rs", "head\nlet total = computeSum(a, b);\ntail\nbrand new\n");
+    let mut app = app_on(&r);
+    app.set_cli_theme(Some("terminal".to_string()));
+    app.focus = Focus::Files;
+    let cell_of = |buf: &Buffer, needle: &str| {
+        let out = dump(buf);
+        let (y, line) = out.lines().enumerate().find(|(_, l)| l.contains(needle)).unwrap();
+        let byte = line.find(needle).unwrap();
+        let x = line[..byte].chars().count() as u16;
+        buf.cell((x, y as u16)).unwrap().clone()
+    };
+
+    // Context is blank, a lone deletion `-`, a lone insertion `+`, and both halves of an
+    // edited line `~`: red on the old, yellow on the new.
+    let buf = render_buffer(&app);
+    let out = dump(&buf);
+    assert!(out.contains("   1 │ head"), "{out}");
+    assert!(out.contains("   2~│ let total = compute(a, b);"), "{out}");
+    assert!(out.contains("   3-│ gone entirely"), "{out}");
+    assert!(out.contains("   2~│ let total = computeSum(a, b);"), "{out}");
+    assert!(out.contains("   4+│ brand new"), "{out}");
+    assert_eq!(cell_of(&buf, "~│ let total = compute(").fg, Color::Red);
+    assert_eq!(cell_of(&buf, "~│ let total = computeSum").fg, Color::Yellow);
+    // Deleted code drops its syntax colors for red; its changed word, on the red fill, takes
+    // the fill's ink so it never reads red on red. Insertions keep their syntax colors.
+    assert_eq!(cell_of(&buf, "gone entirely").fg, Color::Red);
+    assert_eq!(cell_of(&buf, "total = compute(").fg, Color::Red);
+    let word = cell_of(&buf, "compute(a");
+    assert_eq!((word.fg, word.bg), (Color::Black, Color::Red), "{word:?}");
+    assert_ne!(cell_of(&buf, "total = computeSum").fg, Color::Red);
+    assert_eq!(cell_of(&buf, "computeSum(a").bg, Color::Green, "the changed word is emphasized");
+
+    // Merged, the edit is its new half alone; the lone deletion stays.
+    let heights = vec![1; app.visible.len()];
+    app.toggle_merge_modified(&heights, 30, |app| vec![1; app.visible.len()]);
+    let out = render(&app);
+    assert!(out.contains("   2~│ let total = computeSum(a, b);"), "{out}");
+    assert!(!out.contains("compute(a, b)"), "{out}");
+    assert!(out.contains("   3-│ gone entirely"), "{out}");
+    // The key lives in the `?` panel alone, never on row 1.
+    assert!(!out.contains("show old"), "row 1 leaves it out:\n{out}");
+    app.keys_expanded = true;
+    let out = render(&app);
+    assert!(out.contains("O show old"), "the `?` panel names the way back:\n{out}");
 }

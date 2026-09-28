@@ -385,9 +385,9 @@ pub const INVERSE: Color = Color::Indexed(255);
 
 /// The `terminal` theme: the terminal's default background and text, and its sixteen ANSI
 /// colors for everything else, so the terminal's own scheme decides how it looks. ANSI colors
-/// cannot be blended, so there are no tinted diff rows — the `▌` bars mark them — the dim
-/// roles are [`FAINT`], and the surfaces are the grays, ordered by `appearance` — on a dark
-/// terminal the strongest is [`INVERSE`].
+/// cannot be blended, so there are no tinted diff rows — the gutter's status chars and red
+/// deleted text mark them — the dim roles are [`FAINT`], and the surfaces are the grays,
+/// ordered by `appearance` — on a dark terminal the strongest is [`INVERSE`].
 fn follow_terminal(appearance: Appearance) -> Theme {
     let (surface, soft, strong, sel_fg) = match appearance {
         // No ANSI color is a quiet bar on every dark background (black is a hole on a gray

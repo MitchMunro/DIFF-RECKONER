@@ -66,7 +66,7 @@ impl Config {
     }
 }
 
-const PLUGIN_CONFIG_KEYS: [&str; 11] = [
+const PLUGIN_CONFIG_KEYS: [&str; 12] = [
     "theme",
     "dark_theme",
     "light_theme",
@@ -76,6 +76,7 @@ const PLUGIN_CONFIG_KEYS: [&str; 11] = [
     "toggle_direction",
     "auto_open",
     "whole_file",
+    "merge_modified",
     "editor",
     "keybindings",
 ];
@@ -170,6 +171,9 @@ pub struct PluginConfig {
     /// Whether the Changes tab opens in whole-file view. A startup default: a reread never
     /// flips a running pane's view.
     whole_file: bool,
+    /// Whether an edited line shows as its new half alone rather than old and new. A startup
+    /// default like `whole_file`; the `merge-modified` key flips it and saves it here.
+    merge_modified: bool,
     editor: Option<String>,
     keymap: crate::keymap::Keymap,
 }
@@ -186,6 +190,7 @@ impl Default for PluginConfig {
             toggle_direction: ToggleDirection::Right,
             auto_open: true,
             whole_file: true,
+            merge_modified: false,
             editor: None,
             keymap: crate::keymap::Keymap::default(),
         }
@@ -241,6 +246,10 @@ impl PluginConfig {
         self.whole_file
     }
 
+    pub fn merge_modified(&self) -> bool {
+        self.merge_modified
+    }
+
     /// The editor command template, `{file}` and `{line}` substituted.
     pub fn editor(&self) -> Option<&str> {
         self.editor.as_deref()
@@ -272,6 +281,7 @@ impl PluginConfig {
             "toggle_direction": self.toggle_direction.as_str(),
             "auto_open": self.auto_open,
             "whole_file": self.whole_file,
+            "merge_modified": self.merge_modified,
             "editor": self.editor,
             "keybindings": keybindings,
         })
@@ -324,13 +334,14 @@ pub fn save_theme(
         crate::theme::Appearance::Dark => "dark_theme",
         crate::theme::Appearance::Light => "light_theme",
     };
-    edit_config(dir, |text| with_top_level_key(text, key, name, Some("theme")))
+    edit_config(dir, |text| with_top_level_key(text, key, &format!("\"{name}\""), Some("theme")))
 }
 
 /// Save the `terminal` theme: pin `theme = "terminal"` in `<dir>/config.toml`. The
 /// `dark_theme`/`light_theme` pair stays for when the pin is dropped.
 pub fn save_follow_terminal(dir: &Path) -> std::io::Result<()> {
-    edit_config(dir, |text| with_top_level_key(text, "theme", crate::theme::TERMINAL, None))
+    let value = format!("\"{}\"", crate::theme::TERMINAL);
+    edit_config(dir, |text| with_top_level_key(text, "theme", &value, None))
 }
 
 /// Rewrite `<dir>/config.toml` through `edit`, creating the directory and file if missing.
@@ -345,10 +356,17 @@ fn edit_config(dir: &Path, edit: impl FnOnce(&str) -> String) -> std::io::Result
     std::fs::write(&path, edit(&text))
 }
 
-/// `text` with top-level `key` set to `value` and top-level `drop` removed — a table's
-/// same-named keys are someone else's. Every other line is kept as written.
+/// Save `merged`, the edited-lines view the `merge-modified` key toggles, as `merge_modified` in
+/// `<dir>/config.toml`. Every other line is kept as written.
+pub fn save_merge_modified(dir: &Path, merged: bool) -> std::io::Result<()> {
+    edit_config(dir, |text| with_top_level_key(text, "merge_modified", &merged.to_string(), None))
+}
+
+/// `text` with top-level `key` set to `value`, a TOML literal (a string comes quoted), and
+/// top-level `drop` removed — a table's same-named keys are someone else's. Every other line is
+/// kept as written.
 fn with_top_level_key(text: &str, key: &str, value: &str, drop: Option<&str>) -> String {
-    let entry = format!("{key} = \"{value}\"");
+    let entry = format!("{key} = {value}");
     let mut out = Vec::new();
     let mut top_level = true;
     let mut written = false;
@@ -509,6 +527,10 @@ fn parse_plugin_config(path: &Path) -> Result<PluginConfig, PluginConfigError> {
     if let Some(value) = table.get("whole_file") {
         config.whole_file =
             value.as_bool().ok_or_else(|| value_error(path, "whole_file", "a boolean"))?;
+    }
+    if let Some(value) = table.get("merge_modified") {
+        config.merge_modified =
+            value.as_bool().ok_or_else(|| value_error(path, "merge_modified", "a boolean"))?;
     }
     if let Some(value) = table.get("editor") {
         let command = value
@@ -826,6 +848,7 @@ mod tests {
             ("toggle_direction = \"left\"\n", "`toggle_direction`"),
             ("auto_open = \"yes\"\n", "`auto_open`"),
             ("whole_file = 1\n", "`whole_file`"),
+            ("merge_modified = \"yes\"\n", "`merge_modified`"),
             ("editor = \"\"\n", "`editor`"),
             ("editor = \"   \"\n", "`editor`"),
             ("editor = 42\n", "`editor`"),

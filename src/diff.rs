@@ -34,11 +34,16 @@ pub enum Row {
         old_no: u32,
         spans: Vec<Span>,
         emphasis: Vec<CharRange>,
+        /// Whether this is an edited line's old half, paired with the insertion that replaced
+        /// it (see [`pair_homologs`]).
+        modified: bool,
     },
     Insertion {
         new_no: u32,
         spans: Vec<Span>,
         emphasis: Vec<CharRange>,
+        /// Whether this is an edited line's new half, paired with the deletion it replaced.
+        modified: bool,
     },
     Fold {
         lines: Vec<Row>,
@@ -93,6 +98,21 @@ impl Row {
             Row::Insertion { .. } => '+',
             Row::Context { .. } | Row::Fold { .. } | Row::Shown { .. } => ' ',
         }
+    }
+
+    /// The gutter's status char: `'~'` for either half of an edited line, else [`Row::marker`].
+    pub fn status(&self) -> char {
+        if self.is_modified_old() || matches!(self, Row::Insertion { modified: true, .. }) {
+            '~'
+        } else {
+            self.marker()
+        }
+    }
+
+    /// Whether this is an edited line's old half — the row a merged view hides, leaving the
+    /// new half to stand for the edit.
+    pub fn is_modified_old(&self) -> bool {
+        matches!(self, Row::Deletion { modified: true, .. })
     }
 
     /// Whether this row anchors a comment — every kind but a fold marker.
@@ -248,6 +268,7 @@ impl FileDiff {
                         old_no: oi as u32 + 1,
                         spans: line(&old_spans, oi),
                         emphasis: Vec::new(),
+                        modified: false,
                     });
                 }
                 ChangeTag::Insert => {
@@ -256,6 +277,7 @@ impl FileDiff {
                         new_no: ni as u32 + 1,
                         spans: line(&new_spans, ni),
                         emphasis: Vec::new(),
+                        modified: false,
                     });
                 }
             }
@@ -353,11 +375,12 @@ pub(crate) fn compute_emphasis(rows: &mut [Row]) {
     }
 }
 
-/// Pair each deletion in `dels` with its homolog insertion in `inss` and set both lines'
-/// emphasis. Greedy forward scan: deletion `d` takes the first insertion at or after the
-/// last-claimed one whose similarity clears [`MIN_SIMILARITY`]; insertions skipped along the
-/// way are abandoned (they were inserts, not edits of `d`). A deletion with no qualifying
-/// insertion is left unpaired. Mirrors git-delta's homolog inference.
+/// Pair each deletion in `dels` with its homolog insertion in `inss`, marking both lines
+/// `modified` and setting their emphasis. Greedy forward scan: deletion `d` takes the first
+/// insertion at or after the last-claimed one whose similarity clears [`MIN_SIMILARITY`];
+/// insertions skipped along the way are abandoned (they were inserts, not edits of `d`). A
+/// deletion with no qualifying insertion is left unpaired. Mirrors git-delta's homolog
+/// inference.
 fn pair_homologs(rows: &mut [Row], dels: std::ops::Range<usize>, inss: std::ops::Range<usize>) {
     let mut next_ins = inss.start;
     for d in dels {
@@ -367,11 +390,13 @@ fn pair_homologs(rows: &mut [Row], dels: std::ops::Range<usize>, inss: std::ops:
             let new = rows[p].text();
             let (ratio, old_e, new_e) = word_emphasis(&old, &new);
             if ratio >= MIN_SIMILARITY {
-                if let Row::Deletion { emphasis, .. } = &mut rows[d] {
+                if let Row::Deletion { emphasis, modified, .. } = &mut rows[d] {
                     *emphasis = old_e;
+                    *modified = true;
                 }
-                if let Row::Insertion { emphasis, .. } = &mut rows[p] {
+                if let Row::Insertion { emphasis, modified, .. } = &mut rows[p] {
                     *emphasis = new_e;
+                    *modified = true;
                 }
                 next_ins = p + 1;
                 break;
@@ -591,7 +616,7 @@ fn content_hash(previous_path: Option<&str>, old: &str, new: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffCache, FileDiff, FileState, Row, View, language_of};
+    use super::{CharRange, DiffCache, FileDiff, FileState, Row, View, language_of, word_emphasis};
     use crate::highlight::Highlighter;
     use crate::theme;
 
@@ -677,41 +702,53 @@ mod tests {
         assert_eq!(change.new_no(), Some(21)); // line 20 is 1-based line 21
     }
 
+    /// The text of each `ranges` run within `text`.
+    fn segs(text: &str, ranges: &[CharRange]) -> Vec<String> {
+        ranges
+            .iter()
+            .map(|&(a, b)| text.chars().skip(a as usize).take((b - a) as usize).collect())
+            .collect()
+    }
+
     #[test]
     fn word_emphasis_marks_only_the_changed_words() {
-        let d = build("let x = foo(a);\n", "let x = bar(a, b);\n");
-        let del = d.rows.iter().find(|r| matches!(r, Row::Deletion { .. })).unwrap();
-        let ins = d.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
+        let (old, new) = ("let x = foo(a);", "let x = bar(a, b);");
+        let (_, old_e, new_e) = word_emphasis(old, new);
         // Both lines share the `let x = ` and `(a` prefix; `foo`→`bar` and the `, b` are
         // the only emphasized spans, never the whole line.
-        assert!(!del.emphasis().is_empty() && !ins.emphasis().is_empty());
-        let covers = |row: &Row, needle: &str| {
-            let text = row.text();
-            row.emphasis().iter().any(|&(a, b)| {
-                let seg: String = text.chars().skip(a as usize).take((b - a) as usize).collect();
-                seg.contains(needle)
-            })
-        };
-        assert!(covers(del, "foo"), "deletion emphasizes the removed word");
-        assert!(covers(ins, "bar"), "insertion emphasizes the new word");
+        let covers = |text, ranges, needle| segs(text, ranges).iter().any(|s| s.contains(needle));
+        assert!(covers(old, &old_e, "foo"), "the old side emphasizes the removed word");
+        assert!(covers(new, &new_e, "bar"), "the new side emphasizes the new word");
         // `let x = ` is shared, so it is never emphasized.
-        assert!(!covers(del, "let"));
+        assert!(!covers(old, &old_e, "let"));
+    }
+
+    #[test]
+    fn both_halves_of_an_edited_line_are_marked_modified() {
+        let d = build("a\nlet x = foo(a);\nb\n", "a\nlet x = bar(a, b);\nb\n");
+        let del = d.rows.iter().find(|r| matches!(r, Row::Deletion { .. })).unwrap();
+        let ins = d.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
+        assert!(del.is_modified_old() && !ins.is_modified_old());
+        assert_eq!((del.status(), ins.status()), ('~', '~'));
+        assert!(segs(&ins.text(), ins.emphasis()).iter().any(|s| s.contains("bar")));
+        // A trimmed line is modified too.
+        let trimmed = build("let x = foo(a, b);\n", "let x = foo(a);\n");
+        let ins = trimmed.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
+        assert_eq!(ins.status(), '~');
+        // A lone deletion is no edit's old half.
+        let gone = build("a\nb\n", "a\n");
+        assert!(gone.rows.iter().all(|r| !r.is_modified_old()));
+        assert!(gone.rows.iter().any(|r| r.status() == '-'));
     }
 
     #[test]
     fn adjacent_changed_words_coalesce_across_whitespace() {
         // `Hi You` → `Hello There`: two changed words split by a space. The emphasis is a
         // single block spanning the space, not two fragments — the Word-Alt look.
-        let d = build("greet Hi You here\n", "greet Hello There here\n");
-        let del = d.rows.iter().find(|r| matches!(r, Row::Deletion { .. })).unwrap();
-        let ins = d.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
-        let seg = |row: &Row, &(a, b): &(u32, u32)| -> String {
-            row.text().chars().skip(a as usize).take((b - a) as usize).collect()
-        };
-        assert_eq!(del.emphasis().len(), 1, "the removed phrase is one block");
-        assert_eq!(seg(del, &del.emphasis()[0]), "Hi You");
-        assert_eq!(ins.emphasis().len(), 1, "the new phrase is one block");
-        assert_eq!(seg(ins, &ins.emphasis()[0]), "Hello There");
+        let (old, new) = ("greet Hi You here", "greet Hello There here");
+        let (_, old_e, new_e) = word_emphasis(old, new);
+        assert_eq!(segs(old, &old_e), ["Hi You"], "the removed phrase is one block");
+        assert_eq!(segs(new, &new_e), ["Hello There"], "the new phrase is one block");
     }
 
     #[test]
@@ -721,15 +758,12 @@ mod tests {
         // the comment and pairs with the real edit, so `compute`→`computeSum` lights up and
         // the unrelated inserted line stays plain.
         let d = build("let total = compute();\n", "// added\nlet total = computeSum();\n");
-        let seg = |row: &Row| -> String {
-            let (a, b) = row.emphasis()[0];
-            row.text().chars().skip(a as usize).take((b - a) as usize).collect()
-        };
         let del = d.rows.iter().find(|r| matches!(r, Row::Deletion { .. })).unwrap();
         let comment = d.rows.iter().find(|r| r.text() == "// added").unwrap();
         let edited = d.rows.iter().find(|r| r.text() == "let total = computeSum();").unwrap();
-        assert_eq!(seg(del), "compute();", "the deletion emphasizes its real edit");
-        assert_eq!(seg(edited), "computeSum();", "its homolog insertion is the one emphasized");
+        assert_eq!(segs(&del.text(), del.emphasis()), ["compute();"]);
+        assert_eq!(segs(&edited.text(), edited.emphasis()), ["computeSum();"]);
+        assert_eq!((edited.status(), comment.status()), ('~', '+'));
         assert!(comment.emphasis().is_empty(), "the unrelated inserted line stays plain");
     }
 

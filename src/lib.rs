@@ -313,6 +313,7 @@ fn ready_app(cfg: &Config, plugin_config: PluginConfig) -> App {
     let repo = repo_root(cfg);
     let scope = plugin_config.default_scope();
     let whole_file = plugin_config.whole_file();
+    let merge_modified = plugin_config.merge_modified();
     logln!(
         "start repo={} poll={:?} base={:?} scope={}",
         repo.display(),
@@ -322,6 +323,7 @@ fn ready_app(cfg: &Config, plugin_config: PluginConfig) -> App {
     );
     let mut app = App::new(repo, scope, cfg.base.clone());
     app.whole_file = whole_file;
+    app.merge_modified = merge_modified;
     app.set_config_dir(cfg.plugin_config_dir.clone());
     app.set_plugin_config(plugin_config);
     app.set_cli_theme(cfg.theme.clone());
@@ -1281,6 +1283,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
                 let viewport = ui::diff_viewport_height(area, app);
                 app.toggle_whole_file(&heights, viewport, |app| ui::diff_row_heights(app, area));
             }
+            K::MergeModified => {
+                let heights = ui::diff_row_heights(app, area);
+                let viewport = ui::diff_viewport_height(area, app);
+                app.toggle_merge_modified(&heights, viewport, |app| {
+                    ui::diff_row_heights(app, area)
+                });
+            }
             K::Theme => app.open_theme_picker(),
             K::Preview => app.toggle_preview(),
             K::NavigatorPosition => app.cycle_navigator_position(),
@@ -1369,6 +1378,7 @@ fn handle_comments_key(
             | K::Comment
             | K::Preview
             | K::WholeFile
+            | K::MergeModified
             | K::Find
             | K::BasePick
             | K::CommitPick,

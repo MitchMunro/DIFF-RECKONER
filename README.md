@@ -64,10 +64,15 @@ Requires git on `PATH`, a truecolor terminal, macOS or Linux.
 | `Commits` | a picked contiguous run, `A^`..`B` |
 
 The Changes tab shows the whole file, changes in place. `a` switches to the changed regions
-only, each unchanged stretch folded to a `▸ N unmodified lines hidden` marker. `enter` or a
-click on it opens the lines below it, and the marker then reads `▾ N unmodified lines shown`;
+only, each unchanged stretch folded to a `▸ N lines hidden` marker. `enter` or a
+click on it opens the lines below it, and the marker then reads `▾ N lines shown`;
 `enter` again hides them. `a` again shows every line, and the folds you opened stay open.
 `whole_file = false` in `config.toml` starts folded. `]`/`[` step between changes either way.
+
+The gutter marks each line after its number: `+` added, `-` deleted (in red), `~` an edited
+line, blank unchanged. An edited line shows its old half then its new half, the changed words
+highlighted on each. `O` hides the old halves so an edit reads as its new line alone, and `O`
+again brings them back. The choice is saved to `config.toml` as `merge_modified`.
 
 ## Themes
 
