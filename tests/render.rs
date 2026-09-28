@@ -1283,6 +1283,23 @@ fn the_comments_tab_shows_each_comment_as_a_card_with_its_context() {
 }
 
 #[test]
+fn a_span_cards_reveal_keeps_the_lines_it_covers() {
+    let r = Repo::init();
+    let body = (1..=40).map(|n| format!("line {n}\n")).collect::<Vec<_>>().concat();
+    r.write("a.rs", &body);
+    r.commit_all("init");
+    r.write("a.rs", &format!("// [- REVIEW -] [SPAN: 30 lines] many\n{body}"));
+    r.write("b.rs", &body.replace("line 10\n", "// [- REVIEW -] one\nline 10\n"));
+    let app = app_on(&r);
+
+    let heights = ui::card_heights(&app, Rect::new(0, 0, 140, 40));
+    // Heading, box (3), then the 30 covered lines: everything but the trailing gap.
+    assert_eq!((heights[0].lines, heights[0].keep), (35, 34), "{heights:?}");
+    // Heading, five above, box, and the one line it sits on; the rest of the context may go.
+    assert_eq!((heights[1].lines, heights[1].keep), (15, 10), "{heights:?}");
+}
+
+#[test]
 fn the_selected_card_wears_the_cursor_on_its_comment_box() {
     let (_repo, mut app) = edited_app();
     app.focus = Focus::Diff;

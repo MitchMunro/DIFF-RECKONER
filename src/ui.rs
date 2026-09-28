@@ -3239,7 +3239,7 @@ fn card_lines(
 }
 
 /// Every card's height at the card pane's width, and how much of it a reveal keeps on
-/// screen: the heading through the comment box.
+/// screen: the heading through the lines the comment covers.
 #[must_use]
 pub fn card_heights(app: &App, area: Rect) -> Vec<CardHeight> {
     let width = inner_rect(panes(area, app).diff).width as usize;
@@ -3247,9 +3247,15 @@ pub fn card_heights(app: &App, area: Rect) -> Vec<CardHeight> {
     (0..app.store.len())
         .map(|i| {
             let lines = card_lines(app, i, &app.card_code(i), gutter_w, width);
+            let covered =
+                app.store.get(i).map_or(0, |c| if c.deleted.is_some() { 1 } else { c.span });
             let keep = lines
                 .iter()
-                .rposition(|l| matches!(l, CardLine::Note(_) | CardLine::Composer))
+                .rposition(|l| match *l {
+                    CardLine::Note(_) | CardLine::Composer => true,
+                    CardLine::Code { above: false, row, .. } => row < covered as usize,
+                    _ => false,
+                })
                 .map_or(lines.len(), |k| k + 1);
             CardHeight { lines: lines.len(), keep }
         })

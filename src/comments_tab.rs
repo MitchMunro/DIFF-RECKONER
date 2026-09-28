@@ -76,7 +76,8 @@ fn card_code(c: &Comment, hl: &Highlighter) -> CardCode {
 /// How the next frame brings the selected card on screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Reveal {
-    /// Scroll only as far as it takes to show the card's heading through its comment box.
+    /// Scroll only as far as it takes to show the card's heading through the lines its
+    /// comment covers, or from its heading when that is taller than the pane.
     Visible,
     /// Put the card's heading at the top of the pane: a navigator pick lands where the eye
     /// goes.
@@ -84,7 +85,7 @@ pub enum Reveal {
 }
 
 /// One card's measured height in display lines, and how many of them from its top a
-/// [`Reveal::Visible`] keeps on screen — the heading through the comment box.
+/// [`Reveal::Visible`] keeps on screen — the heading through the lines the comment covers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CardHeight {
     pub lines: usize,
