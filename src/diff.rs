@@ -18,6 +18,8 @@ use crate::highlight::Highlighter;
 pub struct Span {
     pub text: String,
     pub color: ratatui::style::Color,
+    /// Whether the syntax theme sets this token bold (Xcode's keywords).
+    pub bold: bool,
 }
 
 /// A rendered diff row. Content rows (`Context`/`Deletion`/`Insertion`) are selectable
@@ -356,6 +358,7 @@ pub(crate) fn set_row_spans(row: &mut Row, next: Vec<Span>) {
 /// insertion similar enough to be the same line edited (see [`pair_homologs`], after
 /// git-delta's `infer_edits`). Lines with no homolog stay unemphasized, carrying only their
 /// red/green; emphasis then points at a real edit instead of flooding a wholesale rewrite.
+/// Each block is then reordered so an edit's halves sit together ([`keep_edits_together`]).
 pub(crate) fn compute_emphasis(rows: &mut [Row]) {
     let mut i = 0;
     while i < rows.len() {
@@ -367,7 +370,8 @@ pub(crate) fn compute_emphasis(rows: &mut [Row]) {
         while i < rows.len() && matches!(rows[i], Row::Insertion { .. }) {
             i += 1;
         }
-        pair_homologs(rows, del_start..ins_start, ins_start..i);
+        let pairs = pair_homologs(rows, del_start..ins_start, ins_start..i);
+        keep_edits_together(&mut rows[del_start..i], ins_start - del_start, &pairs);
         // No change block started here; step over the context/fold row.
         if del_start == i {
             i += 1;
@@ -380,10 +384,16 @@ pub(crate) fn compute_emphasis(rows: &mut [Row]) {
 /// insertion at or after the last-claimed one whose similarity clears [`MIN_SIMILARITY`];
 /// insertions skipped along the way are abandoned (they were inserts, not edits of `d`). A
 /// deletion with no qualifying insertion is left unpaired. Mirrors git-delta's homolog
-/// inference.
-fn pair_homologs(rows: &mut [Row], dels: std::ops::Range<usize>, inss: std::ops::Range<usize>) {
+/// inference. Returns the `(deletion, insertion)` pairs as block-relative indices, ascending
+/// on both sides.
+fn pair_homologs(
+    rows: &mut [Row],
+    dels: std::ops::Range<usize>,
+    inss: std::ops::Range<usize>,
+) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
     let mut next_ins = inss.start;
-    for d in dels {
+    for d in dels.clone() {
         let old = rows[d].text();
         let mut p = next_ins;
         while p < inss.end {
@@ -398,12 +408,50 @@ fn pair_homologs(rows: &mut [Row], dels: std::ops::Range<usize>, inss: std::ops:
                     *emphasis = new_e;
                     *modified = true;
                 }
+                pairs.push((d - dels.start, p - dels.start));
                 next_ins = p + 1;
                 break;
             }
             p += 1;
         }
     }
+    pairs
+}
+
+/// Reorder one change block (`dels` deletions, then its insertions) so no unpaired insertion
+/// sits between an edit's old half and its new half. A homolog search can pair a deletion
+/// with an insertion far down the block; git's order would leave the lines inserted before
+/// it wedged between the halves. Those lines move above the deletion instead. A run of edits
+/// with no insertion between them keeps git's shape — its old halves, then its new ones —
+/// and deletions and insertions each keep their own order, so line numbers still ascend on
+/// each side.
+fn keep_edits_together(block: &mut [Row], dels: usize, pairs: &[(usize, usize)]) {
+    let mut order = Vec::with_capacity(block.len());
+    let (mut d, mut p) = (0, dels);
+    let mut k = 0;
+    while k < pairs.len() {
+        // A run: pairs whose new halves are consecutive, so nothing wedges between them.
+        let mut j = k;
+        while j + 1 < pairs.len() && pairs[j + 1].1 == pairs[j].1 + 1 {
+            j += 1;
+        }
+        let ((first_d, first_p), (last_d, last_p)) = (pairs[k], pairs[j]);
+        // Deletions ahead of the run stay first, as git gives them; the unpaired insertions
+        // ahead of it rise above its old halves.
+        order.extend(d..first_d);
+        order.extend(p..first_p);
+        order.extend(first_d..=last_d);
+        order.extend(first_p..=last_p);
+        (d, p) = (last_d + 1, last_p + 1);
+        k = j + 1;
+    }
+    order.extend(d..dels);
+    order.extend(p..block.len());
+    if order.iter().enumerate().all(|(at, &from)| at == from) {
+        return;
+    }
+    let reordered: Vec<Row> = order.iter().map(|&from| block[from].clone()).collect();
+    block.clone_from_slice(&reordered);
 }
 
 /// Two lines below this similarity are taken to be different lines, not one line edited, so
@@ -765,6 +813,44 @@ mod tests {
         assert_eq!(segs(&edited.text(), edited.emphasis()), ["computeSum();"]);
         assert_eq!((edited.status(), comment.status()), ('~', '+'));
         assert!(comment.emphasis().is_empty(), "the unrelated inserted line stays plain");
+    }
+
+    /// A build's change rows as `(status, text)`, in display order.
+    fn changes(d: &FileDiff) -> Vec<(char, String)> {
+        d.rows.iter().filter(|r| r.status() != ' ').map(|r| (r.status(), r.text())).collect()
+    }
+
+    #[test]
+    fn lines_inserted_before_an_edit_rise_above_its_old_half() {
+        // One line edited far down a block of new lines (testRust.rs's `sorted` doc comment
+        // under the new `tag` and `remove`). Git's order would split the halves by the
+        // inserts; the old half moves down to sit on its new half.
+        let d = build(
+            "fn a() {}\n/// Open tasks first, then highest priority.\nfn b() {}\n",
+            "fn a() {}\nfn tag() {}\nfn remove() {}\n\
+             /// Open tasks first, then highest priority, then by title.\nfn b() {}\n",
+        );
+        let c = |s: char, t: &str| (s, t.to_string());
+        assert_eq!(
+            changes(&d),
+            [
+                c('+', "fn tag() {}"),
+                c('+', "fn remove() {}"),
+                c('~', "/// Open tasks first, then highest priority."),
+                c('~', "/// Open tasks first, then highest priority, then by title."),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_run_of_edits_keeps_old_halves_then_new_ones() {
+        // Nothing wedges between consecutive edits, so they keep git's shape rather than
+        // interleaving; a trailing unpaired insertion stays last.
+        let d = build("let a = 1;\nlet b = 2;\n", "let a = 10;\nlet b = 20;\nlet c = 3;\n");
+        let statuses: Vec<char> = changes(&d).iter().map(|(s, _)| *s).collect();
+        assert_eq!(statuses, ['~', '~', '~', '~', '+']);
+        let texts: Vec<String> = changes(&d).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(texts, ["let a = 1;", "let b = 2;", "let a = 10;", "let b = 20;", "let c = 3;"]);
     }
 
     #[test]

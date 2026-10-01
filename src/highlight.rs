@@ -11,10 +11,12 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use syntect::highlighting::{
-    Color as SyntectColor, HighlightIterator, HighlightState, Highlighter as SyntectHighlighter,
-    StyleModifier, Theme, ThemeItem, ThemeSet, ThemeSettings,
+    Color as SyntectColor, FontStyle, HighlightIterator, HighlightState,
+    Highlighter as SyntectHighlighter, StyleModifier, Theme, ThemeItem, ThemeSet, ThemeSettings,
 };
-use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
+use syntect::parsing::{
+    ParseState, ScopeStack, SyntaxDefinition, SyntaxReference, SyntaxSet, SyntaxSetBuilder,
+};
 use syntect::util::LinesWithEndings;
 
 use std::sync::OnceLock;
@@ -32,6 +34,31 @@ const DEFAULT_FG: Color = Color::Rgb(0xcd, 0xd6, 0xf4);
 fn syntaxes() -> &'static SyntaxSet {
     static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
     SYNTAXES.get_or_init(two_face::syntax::extra_newlines)
+}
+
+/// The vendored Swift grammar in a set of its own, which a lookup tries ahead of
+/// [`syntaxes`]. Its own set, because adding it to the bundled one relinks every syntax there
+/// (a third of a second) on the first highlight.
+fn swift_syntaxes() -> &'static SyntaxSet {
+    static SWIFT_SET: OnceLock<SyntaxSet> = OnceLock::new();
+    SWIFT_SET.get_or_init(|| {
+        let mut builder = SyntaxSetBuilder::new();
+        match SyntaxDefinition::load_from_str(SWIFT, true, None) {
+            Ok(swift) => builder.add(swift),
+            Err(e) => crate::logln!("vendored Swift grammar failed to load: {e}"),
+        }
+        builder.build()
+    })
+}
+
+/// The Swift grammar, extended past the bundled one to scope declarations, members, and type
+/// names (see its header).
+const SWIFT: &str = include_str!("../assets/syntaxes/Swift.sublime-syntax");
+
+/// The set `syntax` belongs to, which its parse must run against.
+fn set_of(syntax: &SyntaxReference) -> &'static SyntaxSet {
+    let swift = swift_syntaxes();
+    if swift.syntaxes().iter().any(|s| std::ptr::eq(s, syntax)) { swift } else { syntaxes() }
 }
 
 /// The two-face embedded theme set, deserialized once and shared — like [`syntaxes`], so a
@@ -92,25 +119,28 @@ impl Checkpoint {
     }
 }
 
-/// A highlight in progress: the syntect state carried from line to line.
+/// A highlight in progress: the syntect state carried from line to line, and the set its
+/// syntax parses against.
 struct Run<'a> {
     highlighter: SyntectHighlighter<'a>,
     parse: ParseState,
     highlight: HighlightState,
+    set: &'static SyntaxSet,
 }
 
 impl<'a> Run<'a> {
     fn start(syntax: &SyntaxReference, theme: &'a Theme) -> Self {
         let highlighter = SyntectHighlighter::new(theme);
         let highlight = HighlightState::new(&highlighter, ScopeStack::new());
-        Self { highlighter, parse: ParseState::new(syntax), highlight }
+        Self { highlighter, parse: ParseState::new(syntax), highlight, set: set_of(syntax) }
     }
 
-    fn resume(theme: &'a Theme, at: &Checkpoint) -> Self {
+    fn resume(syntax: &SyntaxReference, theme: &'a Theme, at: &Checkpoint) -> Self {
         Self {
             highlighter: SyntectHighlighter::new(theme),
             parse: at.parse.clone(),
             highlight: at.highlight.clone(),
+            set: set_of(syntax),
         }
     }
 
@@ -124,16 +154,21 @@ impl<'a> Run<'a> {
 
     /// Highlight one line (with its ending) and advance the state past it.
     fn line(&mut self, line: &str, default_fg: Color) -> Vec<Span> {
-        match self.parse.parse_line(line, syntaxes()) {
+        match self.parse.parse_line(line, self.set) {
             Ok(ops) => HighlightIterator::new(&mut self.highlight, &ops, line, &self.highlighter)
                 .map(|(style, text)| Span {
                     text: text.trim_end_matches('\n').to_string(),
                     color: from_syntect(style.foreground),
+                    bold: style.font_style.contains(FontStyle::BOLD),
                 })
                 .collect(),
             // A grammar error degrades to plain text rather than blocking the diff.
             Err(_) => {
-                vec![Span { text: line.trim_end_matches('\n').to_string(), color: default_fg }]
+                vec![Span {
+                    text: line.trim_end_matches('\n').to_string(),
+                    color: default_fg,
+                    bold: false,
+                }]
             }
         }
     }
@@ -174,7 +209,7 @@ impl Memo {
         let kept = checkpoints.iter().rposition(|c| c.line <= prefix).map_or(0, |k| k + 1);
         let mut tail = checkpoints.split_off(kept).into_iter().peekable();
         let (mut run, start) = match checkpoints.last() {
-            Some(at) => (Run::resume(theme, at), at.line),
+            Some(at) => (Run::resume(syntax, theme, at), at.line),
             None => (Run::start(syntax, theme), 0),
         };
         let mut spans = old.spans;
@@ -273,17 +308,18 @@ impl Highlighter {
     /// The syntax for `language`, matched as an extension first (paths), then as a token name
     /// (markdown fence tags), with the loaded theme; `None` when either is missing.
     fn resolve(&self, language: Option<&str>) -> Option<(&'static SyntaxReference, &Theme)> {
-        let syntaxes = syntaxes();
-        let syntax = language.and_then(|lang| {
-            syntaxes.find_syntax_by_extension(lang).or_else(|| syntaxes.find_syntax_by_token(lang))
-        })?;
+        let find = |set: &'static SyntaxSet, lang: &str| {
+            set.find_syntax_by_extension(lang).or_else(|| set.find_syntax_by_token(lang))
+        };
+        let syntax = language
+            .and_then(|lang| find(swift_syntaxes(), lang).or_else(|| find(syntaxes(), lang)))?;
         Some((syntax, self.theme.as_ref()?))
     }
 
     fn plain(&self, content: &str) -> Vec<Vec<Span>> {
         content
             .lines()
-            .map(|l| vec![Span { text: l.to_string(), color: self.default_fg }])
+            .map(|l| vec![Span { text: l.to_string(), color: self.default_fg, bold: false }])
             .collect()
     }
 }
@@ -387,6 +423,40 @@ mod tests {
     }
 
     #[test]
+    fn a_bold_theme_rule_reaches_the_span() {
+        let theme = crate::diff_theme::resolve("xcode-dark").unwrap();
+        let h = Highlighter::new(theme.syntax);
+        let spans = &h.highlight("private let x = 0\n", Some("swift"))[0];
+        let span = |text: &str| spans.iter().find(|s| s.text.trim() == text).unwrap();
+        assert!(span("private").bold && span("let").bold, "Xcode draws keywords bold");
+        assert!(!span("=").bold, "operators stay plain");
+        assert_eq!(span("0").color, ratatui::style::Color::Rgb(0xd9, 0xc9, 0x7c));
+    }
+
+    #[test]
+    fn the_vendored_swift_grammar_colors_xcodes_roles() {
+        use ratatui::style::Color::Rgb;
+        let theme = crate::diff_theme::resolve("xcode-dark").unwrap();
+        let h = Highlighter::new(theme.syntax);
+        let src = "let logger = 1\nenum Priority { case low, high }\n\
+                   init(title: String) { self.id = nil }\n";
+        let lines = h.highlight(src, Some("swift"));
+        let color = |line: usize, text: &str| {
+            let span = lines[line].iter().find(|s| s.text.trim() == text);
+            span.unwrap_or_else(|| panic!("no span {text:?} in {:?}", lines[line])).color
+        };
+        let declaration = Rgb(0x4e, 0xb0, 0xcc);
+        assert_eq!(color(0, "logger"), declaration);
+        assert_eq!(color(1, "low"), declaration);
+        assert_eq!(color(1, "high"), declaration);
+        assert_eq!(color(2, "title"), declaration);
+        assert_eq!(color(1, "Priority"), Rgb(0x6b, 0xdf, 0xff), "a type declaration");
+        assert_eq!(color(2, "id"), Rgb(0x78, 0xc2, 0xb3), "a member");
+        assert_eq!(color(2, "nil"), Rgb(0xff, 0x7a, 0xb2), "a keyword");
+        assert_eq!(color(2, "String"), Rgb(0xda, 0xba, 0xff), "a system type");
+    }
+
+    #[test]
     fn a_resumed_highlight_equals_a_full_one() {
         let h = Highlighter::new(mocha());
         let base: String = (0..300)
@@ -418,7 +488,10 @@ mod tests {
         let h = Highlighter::new(mocha());
         let lines = h.highlight("alpha\nbeta\n", None);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], vec![super::Span { text: "alpha".into(), color: super::DEFAULT_FG }]);
+        assert_eq!(
+            lines[0],
+            vec![super::Span { text: "alpha".into(), color: super::DEFAULT_FG, bold: false }]
+        );
     }
 
     #[test]

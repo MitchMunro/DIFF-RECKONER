@@ -3158,7 +3158,7 @@ fn the_theme_picker_previews_saves_per_side_or_follows_the_terminal() {
     for _ in 0..3 {
         press(&mut app, &keymap, KeyCode::Up);
     }
-    assert!(app.theme_picker.as_ref().unwrap().on_terminal);
+    assert!(app.theme_picker.as_ref().unwrap().on_top);
     assert!(painted(&app, "terminal"));
     press(&mut app, &keymap, KeyCode::Enter);
     assert!(app.follows_terminal());
@@ -3174,7 +3174,7 @@ fn the_theme_picker_previews_saves_per_side_or_follows_the_terminal() {
 
     // Reopened on `follow terminal`; a side's save drops the pin, and `t` closes too.
     press(&mut app, &keymap, KeyCode::Char('t'));
-    assert!(app.theme_picker.as_ref().unwrap().on_terminal);
+    assert!(app.theme_picker.as_ref().unwrap().on_top);
     press(&mut app, &keymap, KeyCode::Left);
     press(&mut app, &keymap, KeyCode::Enter);
     assert!(!app.follows_terminal());
@@ -3183,6 +3183,52 @@ fn the_theme_picker_previews_saves_per_side_or_follows_the_terminal() {
     press(&mut app, &keymap, KeyCode::Char('t'));
     assert_eq!(app.mode, Mode::Normal);
     assert!(painted(&app, "catppuccin"));
+}
+
+#[test]
+fn the_diff_theme_picker_themes_the_diff_pane_alone() {
+    use diff_reckoner::app::ThemeTarget;
+    use diff_reckoner::{diff_theme, theme};
+    let repo = Repo::init();
+    let config_dir = tempfile::tempdir().unwrap();
+    let mut app = App::new(repo.path_buf(), Scope::Uncommitted, None);
+    app.set_config_dir(Some(config_dir.path().to_path_buf()));
+    let keymap = Keymap::default();
+    let main = theme::resolve(Some("catppuccin")).palette;
+    let config = || std::fs::read_to_string(config_dir.path().join("config.toml")).unwrap();
+
+    // `T` opens on `follow main theme`: by default the pane wears the main theme.
+    press(&mut app, &keymap, KeyCode::Char('T'));
+    let tp = app.theme_picker.as_ref().unwrap();
+    assert_eq!(app.mode, Mode::ThemePick);
+    assert_eq!((tp.target, tp.on_top), (ThemeTarget::Diff, true));
+    assert_eq!(app.active_diff_theme(), diff_theme::MAIN);
+    assert_eq!(*app.diff_palette(), main);
+
+    // Down previews the first dark diff theme in the pane; the main theme stays.
+    press(&mut app, &keymap, KeyCode::Down);
+    assert_eq!(app.active_diff_theme(), "xcode-dark");
+    assert_eq!(*app.diff_palette(), diff_theme::resolve("xcode-dark").unwrap().palette);
+    assert_eq!(*app.palette(), main);
+
+    // Enter saves it as the dark side's diff theme, and it keeps painting once closed.
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(config(), "diff_theme = \"auto\"\ndiff_dark_theme = \"xcode-dark\"\n");
+    press(&mut app, &keymap, KeyCode::Esc);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.active_diff_theme(), "xcode-dark");
+
+    // Reopened on it; up reaches `follow main theme`, which saves as the pin and keeps the
+    // side's choice. `T` closes too.
+    press(&mut app, &keymap, KeyCode::Char('T'));
+    assert!(!app.theme_picker.as_ref().unwrap().on_top);
+    press(&mut app, &keymap, KeyCode::Up);
+    assert_eq!(app.active_diff_theme(), diff_theme::MAIN);
+    press(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(config(), "diff_theme = \"main\"\ndiff_dark_theme = \"xcode-dark\"\n");
+    press(&mut app, &keymap, KeyCode::Char('T'));
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(*app.diff_palette(), main);
 }
 
 /// Dispatch one key through the event loop's dispatcher, under `keymap` as the frame keymap.

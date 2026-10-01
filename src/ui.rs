@@ -69,6 +69,28 @@ fn paint_theme_defaults(frame: &mut Frame, app: &App) {
     }
 }
 
+/// Give the diff pane's cells still on the terminal's default colors the diff theme's own
+/// `base` and `text`, as [`paint_theme_defaults`] does the rest of the frame with the main
+/// theme's. A pane following the main theme is left to that pass.
+fn paint_diff_pane_defaults(frame: &mut Frame, app: &App, inner: Rect) {
+    if app.active_diff_theme() == crate::diff_theme::MAIN {
+        return;
+    }
+    let p = app.diff_palette();
+    let buffer = frame.buffer_mut();
+    for y in inner.top()..inner.bottom() {
+        for x in inner.left()..inner.right() {
+            let Some(cell) = buffer.cell_mut((x, y)) else { continue };
+            if cell.bg == Color::Reset {
+                cell.bg = p.base;
+            }
+            if cell.fg == Color::Reset {
+                cell.fg = p.text;
+            }
+        }
+    }
+}
+
 fn render_frame(frame: &mut Frame, app: &App) {
     let area = frame.area();
     // Link hit-testing resolves against the painted frame; each frame repaints its own.
@@ -100,6 +122,7 @@ fn render_frame(frame: &mut Frame, app: &App) {
         }
     } else {
         render_diff_view(frame, app, p.diff);
+        paint_diff_pane_defaults(frame, app, inner_rect(p.diff));
         if !app.navigator_hidden_here() {
             render_file_list(frame, app, p.files);
         }
@@ -989,10 +1012,10 @@ pub fn diff_inner_width(area: Rect, app: &App) -> usize {
 /// shows a placeholder.
 fn composer_lines(
     app: &App,
+    p: &Palette,
     rows: &[(usize, String)],
     (caret_row, caret_col): (usize, usize),
 ) -> Vec<Line<'static>> {
-    let p = app.palette();
     if app.input.is_empty() {
         return vec![Line::styled("Leave a comment…", Style::default().fg(p.dim2))];
     }
@@ -1810,7 +1833,7 @@ fn truncate_width(s: &str, max: usize) -> String {
 }
 
 fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
-    let p = app.palette();
+    let p = app.diff_palette();
     let mut title = match (&app.diff_path, &app.diff.previous_path) {
         (Some(new), Some(old)) => format!("{old} → {new}"),
         (Some(new), None) => new.clone(),
@@ -1823,7 +1846,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     if app.preview_active() {
         title.push_str(" · preview");
     }
-    let block = bordered(&title, p);
+    let block = bordered(&title, app.palette());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.note_diff_width(inner.width as usize);
@@ -1963,7 +1986,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
         if !above.is_empty() {
             frame.render_widget(Paragraph::new(above), bands[0]);
         }
-        render_composer(frame, app, bands[1]);
+        render_composer(frame, app, bands[1], p);
         if !below.is_empty() {
             frame.render_widget(Paragraph::new(below), bands[2]);
         }
@@ -2244,6 +2267,7 @@ fn plain_cell(ch: char) -> Cell {
         ch,
         w: UnicodeWidthChar::width(ch).unwrap_or(0),
         fg: Color::Reset,
+        bold: false,
         emph: false,
         hl: false,
         src: 0,
@@ -2318,6 +2342,8 @@ struct Cell {
     ch: char,
     w: usize,
     fg: Color,
+    /// Whether the syntax theme sets this token bold.
+    bold: bool,
     emph: bool,
     hl: bool,
     /// The source-char index this cell paints — a tab's expansion cells share one index —
@@ -2337,19 +2363,19 @@ fn code_cells(row: &Row, emph_on: bool, hl_ranges: &[(u32, u32)]) -> Vec<Cell> {
     let mut idx = 0u32;
     let mut col = 0usize; // display column, so tab stops land right after wide glyphs too
     for s in row.spans() {
-        let fg = s.color;
+        let (fg, bold) = (s.color, s.bold);
         for ch in s.text.chars() {
             let emph = in_emph(idx);
             let hl = in_hl(idx);
             let src = idx as usize;
             if ch == '\t' {
                 for _ in 0..(TAB - col % TAB) {
-                    cells.push(Cell { ch: ' ', w: 1, fg, emph, hl, src });
+                    cells.push(Cell { ch: ' ', w: 1, fg, bold, emph, hl, src });
                     col += 1;
                 }
             } else {
                 let w = UnicodeWidthChar::width(ch).unwrap_or(0);
-                cells.push(Cell { ch, w, fg, emph, hl, src });
+                cells.push(Cell { ch, w, fg, bold, emph, hl, src });
                 col += w;
             }
             idx += 1;
@@ -2375,19 +2401,19 @@ fn display_width(row: &Row) -> usize {
 fn cells_to_spans(cells: &[Cell], emph_bg: Color, hl: HlStyle) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut buf = String::new();
-    let mut cur: Option<(Color, bool, bool)> = None;
+    let mut cur: Option<(Color, bool, bool, bool)> = None;
     for c in cells {
-        let key = (c.fg, c.emph, c.hl);
+        let key = (c.fg, c.bold, c.emph, c.hl);
         if cur != Some(key) {
-            if let Some((fg, emph, is_hl)) = cur {
-                spans.push(cell_span(std::mem::take(&mut buf), fg, emph, is_hl, emph_bg, hl));
+            if let Some((fg, bold, emph, is_hl)) = cur {
+                spans.push(cell_span(std::mem::take(&mut buf), fg, bold, emph, is_hl, emph_bg, hl));
             }
             cur = Some(key);
         }
         buf.push(c.ch);
     }
-    if let Some((fg, emph, is_hl)) = cur {
-        spans.push(cell_span(buf, fg, emph, is_hl, emph_bg, hl));
+    if let Some((fg, bold, emph, is_hl)) = cur {
+        spans.push(cell_span(buf, fg, bold, emph, is_hl, emph_bg, hl));
     }
     spans
 }
@@ -2401,10 +2427,11 @@ struct HlStyle {
 }
 
 /// A run's span: a find match reverses to `hl.fg` on `hl.bg`; else word emphasis takes `emph_bg`;
-/// else the plain foreground.
+/// else the plain foreground. A `bold` token stays bold under either fill.
 fn cell_span(
     text: String,
     fg: Color,
+    bold: bool,
     emph: bool,
     is_hl: bool,
     emph_bg: Color,
@@ -2417,6 +2444,7 @@ fn cell_span(
     } else {
         Style::default().fg(fg)
     };
+    let style = if bold { style.add_modifier(Modifier::BOLD) } else { style };
     Span::styled(text, style)
 }
 
@@ -2425,7 +2453,7 @@ fn cell_span(
 /// view.
 fn render_find_band(frame: &mut Frame, app: &App, area: Rect) {
     let Some(f) = app.find.as_ref() else { return };
-    let p = app.palette();
+    let p = app.diff_palette();
     let dim = Style::default().fg(p.dim2);
 
     // The count: `k/total` on a match, the total off a match, `no matches` when nothing matches,
@@ -2491,7 +2519,7 @@ fn render_note_row(
         ..c.clone()
     });
     let c = moved.as_ref().unwrap_or(c);
-    let p = app.palette();
+    let p = app.diff_palette();
     let focused = app.focus == Focus::Diff;
     let on_it = dress.get(app.diff_cursor) == Some(&dress[i]);
     let border = Style::default().fg(if on_it && focused { p.text } else { p.dim1 });
@@ -2573,8 +2601,7 @@ fn note_line(line: &NoteLine, c: &Comment, numbered: bool, b: &NoteBox) -> Line<
 /// The inline comment input box, drawn across `band`, in the resting box's shape: the line
 /// number its comment starts on takes the left side of the first text row, its last digit on
 /// the side's column where the gutter paints its own.
-fn render_composer(frame: &mut Frame, app: &App, band: Rect) {
-    let p = app.palette();
+fn render_composer(frame: &mut Frame, app: &App, band: Rect, p: &Palette) {
     let accent = Style::default().fg(p.orange);
     let indent = (composer_indent(app) as u16).min(band.width.saturating_sub(3));
     let boxed = Rect { x: band.x + indent, width: band.width - indent, ..band };
@@ -2595,7 +2622,7 @@ fn render_composer(frame: &mut Frame, app: &App, band: Rect) {
     let (cursor_row, cursor_col) = composer_caret_cell_position(&rows, rowcol, content_w);
     // A box too short for its rows scrolls to keep the caret row visible.
     let scroll = cursor_row.saturating_sub((inner.height as usize).saturating_sub(1));
-    let body = Paragraph::new(composer_lines(app, &rows, rowcol))
+    let body = Paragraph::new(composer_lines(app, p, &rows, rowcol))
         .block(block)
         .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0));
     frame.render_widget(body, area);
@@ -2829,7 +2856,14 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
             (hint(K::MergeModified), if app.merge_modified { "show old" } else { "hide old" })
         }
         A::Theme => (hint(K::Theme), "theme"),
-        A::CloseThemePicker => (format!("esc/{}", hint(K::Theme)), "close"),
+        A::DiffTheme => (hint(K::DiffTheme), "diff theme"),
+        A::CloseThemePicker => {
+            let key = match app.theme_picker.as_ref().map(|tp| tp.target) {
+                Some(crate::app::ThemeTarget::Diff) => K::DiffTheme,
+                _ => K::Theme,
+            };
+            (format!("esc/{}", hint(key)), "close")
+        }
         A::ThemeSide => ("←→".into(), "dark/light"),
         // The arrows move in the find band, the search screen, and the base and theme pickers,
         // where no letter moves.
@@ -3397,7 +3431,7 @@ fn render_comment_cards(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(from) = slots.iter().position(|(_, l)| *l == CardLine::Composer) {
         let n = slots[from..].iter().take_while(|(_, l)| *l == CardLine::Composer).count();
         let band = Rect { y: inner.y + from as u16, height: n as u16, ..inner };
-        render_composer(frame, app, band);
+        render_composer(frame, app, band, app.palette());
     }
     app.note_card_slots(slots);
 }
@@ -3827,25 +3861,32 @@ fn theme_mark(p: &Palette, checked: bool) -> Span<'static> {
     if checked { Span::styled(" ✓ ", Style::default().fg(p.green)) } else { Span::raw("   ") }
 }
 
-/// The theme picker: `follow terminal` across the top, then the dark list and the light list
-/// side by side, each under its header. The highlight takes the selection fill; the saved
-/// choice is checked — `follow terminal`, or each side's theme. While `follow terminal` is
-/// highlighted, a note sits on the row above the box.
+/// The theme picker: its top row (`follow terminal`, or `follow main theme` for the diff
+/// pane's) across the top, then the dark list and the light list side by side, each under its
+/// header. The highlight takes the selection fill; the saved choice is checked — the top row,
+/// or each side's theme. While `follow terminal` is highlighted, a note sits on the row above
+/// the box.
 fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
-    use crate::theme::{self, Appearance};
+    use crate::app::ThemeTarget;
+    use crate::theme::Appearance;
     let Some(tp) = &app.theme_picker else { return };
     let p = app.palette();
-    let widest_name = theme::CATALOG.iter().map(|(n, _)| n.width()).max().unwrap_or(0);
+    let (title, top_label) = match tp.target {
+        ThemeTarget::Main => ("theme", "follow terminal"),
+        ThemeTarget::Diff => ("theme for diff viewer only", "follow main theme"),
+    };
+    let sides = [Appearance::Dark, Appearance::Light].map(|side| tp.names(side));
+    let widest_name = sides.iter().flatten().map(|n| n.width()).max().unwrap_or(0);
     // The lead, the name, one column of air.
     let col_w = THEME_ROW_LEAD + widest_name + 1;
-    let rows = theme::names(Appearance::Dark).len().max(theme::names(Appearance::Light).len());
-    // Both columns and the rule between them, or the note if wider; the note row, both
-    // borders, the `follow terminal` row, and the header row.
-    let widest = (2 * col_w + 1).max(TERMINAL_NOTE.width());
-    let outer = menu_popup(area, app, widest, "theme", rows + 5);
+    let rows = sides[0].len().max(sides[1].len());
+    // Both columns and the rule between them, or the note or the title if wider; the note
+    // row, both borders, the top row, and the header row.
+    let widest = (2 * col_w + 1).max(TERMINAL_NOTE.width()).max(framed_title(title).width() + 2);
+    let outer = menu_popup(area, app, widest, title, rows + 5);
     let note = Rect { height: outer.height.min(1), ..outer };
     let popup = Rect { y: outer.y + note.height, height: outer.height - note.height, ..outer };
-    if tp.on_terminal {
+    if tp.on_top && tp.target == ThemeTarget::Main {
         let note = Rect { width: (TERMINAL_NOTE.width() as u16).min(note.width), ..note };
         frame.render_widget(Clear, note);
         let text = Span::styled(TERMINAL_NOTE, Style::default().fg(p.yellow));
@@ -3855,18 +3896,18 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(p.purple))
-        .title(framed_title("theme"));
+        .title(framed_title(title));
     let inner = picker_inner(popup);
     frame.render_widget(block, popup);
     if inner.height == 0 {
         return;
     }
-    let follows = app.follows_terminal();
+    let follows = app.saved_top(tp.target);
     let terminal_row = selectable_row(
         p,
-        vec![theme_mark(p, follows), Span::styled("follow terminal", text_style(p))],
+        vec![theme_mark(p, follows), Span::styled(top_label, text_style(p))],
         inner.width as usize,
-        RowCursor::at(tp.on_terminal, true),
+        RowCursor::at(tp.on_top, true),
     );
     frame.render_widget(List::new([terminal_row]), Rect { height: 1, ..inner });
     let lists = Rect { y: inner.y + 1, height: inner.height.saturating_sub(1), ..inner };
@@ -3883,7 +3924,7 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
     for (side, column, label) in
         [(Appearance::Dark, left, "dark"), (Appearance::Light, right, "light")]
     {
-        let active = tp.side == side && !tp.on_terminal;
+        let active = tp.side == side && !tp.on_top;
         let header_style = if active {
             Style::default().fg(p.purple).add_modifier(Modifier::BOLD)
         } else {
@@ -3893,8 +3934,8 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Paragraph::new(header), Rect { height: 1, ..column });
 
         let list_area = Rect { y: column.y + 1, height: column.height.saturating_sub(1), ..column };
-        let names = theme::names(side);
-        let saved = app.saved_theme(side);
+        let names = tp.names(side);
+        let saved = app.saved_pick(tp.target, side);
         let cursor = tp.cursor(side);
         let first = menu_scroll(cursor, names.len(), list_area.height as usize);
         let width = list_area.width as usize;
@@ -3905,7 +3946,7 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
             .take(list_area.height as usize)
             .map(|(i, &name)| {
                 let spans = vec![
-                    theme_mark(p, !follows && name == saved),
+                    theme_mark(p, !follows && saved == Some(name)),
                     Span::styled(name, text_style(p)),
                 ];
                 selectable_row(p, spans, width, RowCursor::at(active && i == cursor, true))

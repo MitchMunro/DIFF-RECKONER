@@ -13,6 +13,7 @@ pub mod browser;
 pub mod comments_tab;
 pub mod config;
 pub mod diff;
+pub mod diff_theme;
 pub mod editor;
 pub mod export;
 pub mod file_list;
@@ -1227,9 +1228,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
     // before the next frame, as a config theme change does.
     if app.mode == Mode::ThemePick {
         use crate::theme::Appearance;
-        let before = app.active_theme();
+        let before = (app.active_theme(), app.active_diff_theme());
         match (action, key.code) {
-            (Some(K::Theme), _) | (_, Esc) => app.close_theme_picker(),
+            (Some(K::Theme | K::DiffTheme), _) | (_, Esc) => app.close_theme_picker(),
             (_, Enter) => app.theme_picker_save(),
             (_, Down) => app.theme_picker_move(1),
             (_, Up) => app.theme_picker_move(-1),
@@ -1237,7 +1238,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             (_, Right) => app.theme_picker_side(Appearance::Light),
             _ => {}
         }
-        if app.active_theme() != before && app.config_error().is_none() {
+        if (app.active_theme(), app.active_diff_theme()) != before && app.config_error().is_none() {
             app.reload()?;
         }
         return Ok(());
@@ -1291,6 +1292,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
                 });
             }
             K::Theme => app.open_theme_picker(),
+            K::DiffTheme => app.open_diff_theme_picker(),
             K::Preview => app.toggle_preview(),
             K::NavigatorPosition => app.cycle_navigator_position(),
             K::NavigatorHide => app.toggle_navigator_hidden(),

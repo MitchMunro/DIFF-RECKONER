@@ -166,7 +166,7 @@ mod tests {
     use crate::diff::Span;
 
     fn spans(text: &str) -> Vec<Span> {
-        vec![Span { text: text.into(), color: ratatui::style::Color::Reset }]
+        vec![Span { text: text.into(), color: ratatui::style::Color::Reset, bold: false }]
     }
 
     fn ctx(text: &str) -> Row {

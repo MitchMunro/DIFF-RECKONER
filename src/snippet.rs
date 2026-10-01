@@ -165,7 +165,8 @@ fn parse_hunk(hunk: &str) -> (Vec<Row>, bool) {
             }
             _ => (' ', raw, 0, 0),
         };
-        let spans = vec![Span { text: text.to_string(), color: ratatui::style::Color::Reset }];
+        let spans =
+            vec![Span { text: text.to_string(), color: ratatui::style::Color::Reset, bold: false }];
         rows.push(match marker {
             '+' => {
                 Row::Insertion { new_no: this_new, spans, emphasis: Vec::new(), modified: false }

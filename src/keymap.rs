@@ -29,6 +29,7 @@ pub enum Action {
     WholeFile,
     MergeModified,
     Theme,
+    DiffTheme,
     Preview,
     NavigatorPosition,
     NavigatorHide,
@@ -161,7 +162,7 @@ impl Key {
 
 /// Every action with its config name and default keys — the single source the default keymap,
 /// the name lookup, and the config error message are built from.
-const ACTIONS: [(Action, &str, &[Key]); 44] = [
+const ACTIONS: [(Action, &str, &[Key]); 45] = [
     (Action::Down, "down", &[Key::plain('j'), Key::named(KeyCode::Down)]),
     (Action::Up, "up", &[Key::plain('k'), Key::named(KeyCode::Up)]),
     (Action::NextHunk, "next-hunk", &[Key::plain(']')]),
@@ -186,6 +187,7 @@ const ACTIONS: [(Action, &str, &[Key]); 44] = [
     (Action::WholeFile, "whole-file", &[Key::plain('a')]),
     (Action::MergeModified, "merge-modified", &[Key::plain('O')]),
     (Action::Theme, "theme", &[Key::plain('t')]),
+    (Action::DiffTheme, "diff-theme", &[Key::plain('T')]),
     (Action::Preview, "preview", &[Key::plain('m')]),
     (Action::NavigatorPosition, "navigator-position", &[Key::plain('p')]),
     (Action::NavigatorHide, "navigator-hide", &[Key::plain('z')]),

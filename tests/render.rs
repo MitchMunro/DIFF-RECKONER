@@ -1547,6 +1547,33 @@ fn the_theme_picker_lists_both_sides_and_checks_each_saved_theme() {
 }
 
 #[test]
+fn the_diff_theme_picker_paints_the_diff_pane_alone() {
+    let (_repo, mut app) = edited_app();
+    let main = *app.palette();
+    app.open_diff_theme_picker();
+    let out = render(&app);
+    let lines: Vec<&str> = out.lines().collect();
+    let at = |needle: &str| lines.iter().position(|l| l.contains(needle)).expect(needle);
+    assert!(out.contains("┌ theme for diff viewer only"), "titled for the diff pane:\n{out}");
+    // `follow main theme` is the checked default above the lists, which start on the editor
+    // defaults; the main picker's terminal note does not show.
+    assert!(lines[at("follow main theme")].contains('✓'));
+    assert!(at("follow main theme") < at(" dark"));
+    assert!(lines[at("xcode-dark")].contains("xcode-light"));
+    assert!(!out.contains("Results vary"));
+
+    // A highlighted diff theme paints the diff pane's background; the file list keeps the
+    // main theme's.
+    app.theme_picker_move(1);
+    let diff_base = app.diff_palette().base;
+    assert_ne!(diff_base, main.base);
+    let buf = render_buffer(&app);
+    let count = |bg| buf.content.iter().filter(|c| c.bg == bg).count();
+    assert!(count(diff_base) > 500, "the diff pane wears xcode-dark");
+    assert!(count(main.base) > 200, "the rest keeps the main theme");
+}
+
+#[test]
 fn highlighting_follow_terminal_shows_the_note_above_the_box() {
     let (_repo, mut app) = edited_app();
     app.open_theme_picker();

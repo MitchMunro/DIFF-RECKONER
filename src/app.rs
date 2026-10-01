@@ -231,19 +231,44 @@ impl BasePicker {
     }
 }
 
-/// The theme picker's state while it is open: which side (the dark list or the light) the
-/// highlight is on, its row on each side, or the `follow terminal` row above them. The check
-/// marks are the config snapshot's `theme`/`dark_theme`/`light_theme`, not state of its own.
+/// Which theme a theme picker chooses: the main theme (`t`), or the diff pane's own (`T`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeTarget {
+    Main,
+    Diff,
+}
+
+/// The theme picker's state while it is open: what it chooses, which side (the dark list or
+/// the light) the highlight is on, its row on each side, or the top row above them (`follow
+/// terminal`, or `follow main theme` for the diff pane). The check marks are the config
+/// snapshot's saved choices, not state of its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThemePicker {
+    pub target: ThemeTarget,
     pub side: theme::Appearance,
     pub dark_cursor: usize,
     pub light_cursor: usize,
-    /// Whether the highlight is on the `follow terminal` row above both sides.
-    pub on_terminal: bool,
+    /// Whether the highlight is on the top row above both sides.
+    pub on_top: bool,
 }
 
 impl ThemePicker {
+    /// The themes listed on `side`.
+    pub fn names(&self, side: theme::Appearance) -> Vec<&'static str> {
+        match self.target {
+            ThemeTarget::Main => theme::names(side),
+            ThemeTarget::Diff => crate::diff_theme::names(side),
+        }
+    }
+
+    /// The top row's theme name: `terminal`, or the diff pane's `main`.
+    fn top(&self) -> &'static str {
+        match self.target {
+            ThemeTarget::Main => theme::TERMINAL,
+            ThemeTarget::Diff => crate::diff_theme::MAIN,
+        }
+    }
+
     /// The highlighted row on `side`.
     pub fn cursor(&self, side: theme::Appearance) -> usize {
         match side {
@@ -259,13 +284,9 @@ impl ThemePicker {
         }
     }
 
-    /// The theme under the highlight: `terminal` on its row, else the active side's.
+    /// The theme under the highlight: the top row's, else the active side's.
     pub fn highlighted(&self) -> &'static str {
-        if self.on_terminal {
-            theme::TERMINAL
-        } else {
-            theme::names(self.side)[self.cursor(self.side)]
-        }
+        if self.on_top { self.top() } else { self.names(self.side)[self.cursor(self.side)] }
     }
 }
 
@@ -626,6 +647,8 @@ pub enum FooterAction {
     MergeModified,
     /// Open the theme picker.
     Theme,
+    /// Open the diff pane's theme picker.
+    DiffTheme,
     /// The theme picker's own bar: save the highlight, close, move up and down a side, and
     /// switch sides.
     SaveTheme,
@@ -911,6 +934,14 @@ pub struct App {
     /// The theme picker's highlighted theme, painted while the picker is open (highest
     /// precedence). Closing the picker drops it.
     preview_theme: Option<&'static str>,
+    /// The diff pane's own theme, when it wears one: its palette and highlighter. `None`
+    /// paints the pane in the main theme's.
+    diff_theme: Option<(Palette, Highlighter)>,
+    /// The diff pane's theme name, or [`crate::diff_theme::MAIN`] while it follows the main
+    /// theme, so re-resolving to the same theme is a no-op.
+    diff_theme_name: &'static str,
+    /// The diff theme picker's highlighted theme, painted while it is open.
+    preview_diff_theme: Option<&'static str>,
     /// Where `config.toml` lives, so the theme picker can save to it. `None` saves nothing.
     config_dir: Option<std::path::PathBuf>,
     /// The plugin is either ready with one validated snapshot or wholly blocked on its error.
@@ -1045,6 +1076,9 @@ impl App {
             theme_name: theme.name,
             cli_theme_name: None,
             preview_theme: None,
+            diff_theme: None,
+            diff_theme_name: crate::diff_theme::MAIN,
+            preview_diff_theme: None,
             config_dir: None,
             config: PluginConfigState::Ready(crate::config::PluginConfig::default()),
             requested_theme_name: None,
@@ -1076,6 +1110,21 @@ impl App {
         }
     }
 
+    /// Resolve diff theme `name` (`None` or `main` = follow the main theme) and apply it when it
+    /// changes: rebuild the pane's highlighter and drop the cached diffs so they re-render. A
+    /// name that fails to resolve follows the main theme.
+    fn set_diff_theme(&mut self, name: Option<&str>) {
+        let resolved = name.and_then(crate::diff_theme::resolve);
+        let resolved_name = resolved.as_ref().map_or(crate::diff_theme::MAIN, |t| t.name);
+        if resolved_name == self.diff_theme_name {
+            return;
+        }
+        self.diff_theme_name = resolved_name;
+        self.diff_theme = resolved.map(|t| (t.palette, Highlighter::new(t.syntax)));
+        self.cache = DiffCache::new();
+        self.markdown_cache.borrow_mut().clear();
+    }
+
     /// Set where the theme picker saves `config.toml`.
     pub fn set_config_dir(&mut self, dir: Option<std::path::PathBuf>) {
         self.config_dir = dir;
@@ -1092,22 +1141,59 @@ impl App {
         self.config_snapshot().theme() == theme::TERMINAL
     }
 
+    /// The `target` picker's check mark on `side`: the theme saved there, if any.
+    pub fn saved_pick(&self, target: ThemeTarget, side: theme::Appearance) -> Option<&str> {
+        match target {
+            ThemeTarget::Main => Some(self.saved_theme(side)),
+            ThemeTarget::Diff => self.config_snapshot().diff_theme_for(side),
+        }
+    }
+
+    /// Whether the `target` picker's top row is the saved choice: `follow terminal`, or the
+    /// diff pane's `follow main theme`. While it is, the side check marks do not show.
+    pub fn saved_top(&self, target: ThemeTarget) -> bool {
+        match target {
+            ThemeTarget::Main => self.follows_terminal(),
+            ThemeTarget::Diff => self.config_snapshot().diff_follows_main(),
+        }
+    }
+
     /// Open the theme picker on the active theme's row: `follow terminal`, or its side, each
     /// side highlighting the active theme when it is there and that side's saved theme
     /// otherwise. Nothing previews until the highlight moves.
     pub fn open_theme_picker(&mut self) {
-        let active = self.theme_name;
-        let row = |side| {
-            let names = theme::names(side);
-            let at = |name: &str| names.iter().position(|n| *n == name);
-            at(active).or_else(|| at(self.saved_theme(side))).unwrap_or(0)
+        self.open_picker(ThemeTarget::Main, self.theme_name);
+    }
+
+    /// Open the diff pane's theme picker, as [`Self::open_theme_picker`] opens the main one:
+    /// on `follow main theme` while the pane wears the main theme.
+    pub fn open_diff_theme_picker(&mut self) {
+        self.open_picker(ThemeTarget::Diff, self.diff_theme_name);
+    }
+
+    fn open_picker(&mut self, target: ThemeTarget, active: &'static str) {
+        let mut picker = ThemePicker {
+            target,
+            side: theme::detected(),
+            dark_cursor: 0,
+            light_cursor: 0,
+            on_top: false,
         };
-        self.theme_picker = Some(ThemePicker {
-            side: theme::appearance_of(active).unwrap_or_else(theme::detected),
-            dark_cursor: row(theme::Appearance::Dark),
-            light_cursor: row(theme::Appearance::Light),
-            on_terminal: active == theme::TERMINAL,
-        });
+        let row = |side| {
+            let names = picker.names(side);
+            let at = |name: &str| names.iter().position(|n| *n == name);
+            at(active).or_else(|| self.saved_pick(target, side).and_then(at)).unwrap_or(0)
+        };
+        let (dark, light) = (row(theme::Appearance::Dark), row(theme::Appearance::Light));
+        let appearance = match target {
+            ThemeTarget::Main => theme::appearance_of(active),
+            ThemeTarget::Diff => crate::diff_theme::appearance_of(active),
+        };
+        picker.dark_cursor = dark;
+        picker.light_cursor = light;
+        picker.side = appearance.unwrap_or_else(theme::detected);
+        picker.on_top = active == picker.top();
+        self.theme_picker = Some(picker);
         self.mode = Mode::ThemePick;
     }
 
@@ -1119,62 +1205,69 @@ impl App {
         }
         self.theme_picker = None;
         self.preview_theme = None;
+        self.preview_diff_theme = None;
         self.refresh_theme();
     }
 
     /// Move the highlight up or down its side and preview the theme under it. Up from a side's
-    /// first row reaches `follow terminal`; down from there, that side's first row.
+    /// first row reaches the top row; down from there, that side's first row.
     pub fn theme_picker_move(&mut self, delta: isize) {
         let Some(tp) = self.theme_picker.as_mut() else { return };
-        let len = theme::names(tp.side).len();
-        let before = (tp.on_terminal, tp.cursor(tp.side));
-        if tp.on_terminal {
+        let len = tp.names(tp.side).len();
+        let before = (tp.on_top, tp.cursor(tp.side));
+        if tp.on_top {
             if delta > 0 {
-                tp.on_terminal = false;
+                tp.on_top = false;
                 *tp.cursor_mut() = step(0, delta - 1, len);
             }
         } else if tp.cursor(tp.side) as isize + delta < 0 {
-            tp.on_terminal = true;
+            tp.on_top = true;
         } else {
             let cursor = tp.cursor_mut();
             *cursor = step(*cursor, delta, len);
         }
-        if before != (tp.on_terminal, tp.cursor(tp.side)) {
+        if before != (tp.on_top, tp.cursor(tp.side)) {
             self.preview_highlighted_theme();
         }
     }
 
-    /// Move the highlight to `side`'s list — from the other side, or down off `follow
-    /// terminal` — and preview the theme under it there.
+    /// Move the highlight to `side`'s list — from the other side, or down off the top row —
+    /// and preview the theme under it there.
     pub fn theme_picker_side(&mut self, side: theme::Appearance) {
         let Some(tp) = self.theme_picker.as_mut() else { return };
-        if tp.side != side || tp.on_terminal {
+        if tp.side != side || tp.on_top {
             tp.side = side;
-            tp.on_terminal = false;
+            tp.on_top = false;
             self.preview_highlighted_theme();
         }
     }
 
     fn preview_highlighted_theme(&mut self) {
-        self.preview_theme = self.theme_picker.as_ref().map(ThemePicker::highlighted);
+        let Some(tp) = &self.theme_picker else { return };
+        let name = Some(tp.highlighted());
+        match tp.target {
+            ThemeTarget::Main => self.preview_theme = name,
+            ThemeTarget::Diff => self.preview_diff_theme = name,
+        }
         self.refresh_theme();
     }
 
-    /// Save the highlight in `config.toml` — `follow terminal` as the `theme` pin, a side's
-    /// theme as that side's `auto` theme — and apply the file it wrote so the check mark moves
-    /// now. The save also retires a `--theme` override: the reviewer just chose what should
-    /// paint.
+    /// Save the highlight in `config.toml` — the top row as the pin (`theme = "terminal"`,
+    /// `diff_theme = "main"`), a side's theme as that side's `auto` theme — and apply the file
+    /// it wrote so the check mark moves now. A main-theme save also retires a `--theme`
+    /// override: the reviewer just chose what should paint.
     pub fn theme_picker_save(&mut self) {
         let Some(tp) = &self.theme_picker else { return };
-        let (on_terminal, side, name) = (tp.on_terminal, tp.side, tp.highlighted());
+        let (target, on_top, side, name) = (tp.target, tp.on_top, tp.side, tp.highlighted());
         let Some(dir) = self.config_dir.clone() else {
             self.status = "no config directory to save the theme to".into();
             return;
         };
-        let saved = if on_terminal {
-            crate::config::save_follow_terminal(&dir)
-        } else {
-            crate::config::save_theme(&dir, side, name)
+        let saved = match (target, on_top) {
+            (ThemeTarget::Main, true) => crate::config::save_follow_terminal(&dir),
+            (ThemeTarget::Main, false) => crate::config::save_theme(&dir, side, name),
+            (ThemeTarget::Diff, true) => crate::config::save_diff_follow_main(&dir),
+            (ThemeTarget::Diff, false) => crate::config::save_diff_theme(&dir, side, name),
         };
         if let Err(e) = saved {
             self.status = format!("theme not saved: {e}");
@@ -1182,9 +1275,14 @@ impl App {
         }
         match crate::config::plugin_config_in(&dir) {
             Ok(config) => {
-                self.cli_theme_name = None;
+                if target == ThemeTarget::Main {
+                    self.cli_theme_name = None;
+                }
                 self.set_plugin_config(config);
-                self.status = format!("saved theme: {name}");
+                self.status = match target {
+                    ThemeTarget::Main => format!("saved theme: {name}"),
+                    ThemeTarget::Diff => format!("saved diff theme: {name}"),
+                };
             }
             Err(e) => self.set_config_error(e.to_string()),
         }
@@ -1362,7 +1460,7 @@ impl App {
     }
 
     /// Re-resolve the active theme from the picker's preview, the CLI override, or the current
-    /// validated snapshot.
+    /// validated snapshot — and the diff pane's from its picker's preview or the snapshot.
     fn refresh_theme(&mut self) {
         let config = self.config_snapshot();
         let name = match (self.preview_theme, self.cli_theme_name.as_deref()) {
@@ -1371,7 +1469,12 @@ impl App {
             (None, Some(cli)) => cli.to_owned(),
             (None, None) => config.active_theme().to_owned(),
         };
+        let diff_name = match self.preview_diff_theme {
+            Some(preview) => Some(preview.to_owned()),
+            None => config.active_diff_theme().map(str::to_owned),
+        };
         self.set_theme(Some(&name));
+        self.set_diff_theme(diff_name.as_deref());
     }
 
     /// The name of the theme painting now.
@@ -1379,9 +1482,25 @@ impl App {
         self.theme_name
     }
 
+    /// The name of the diff theme painting the diff pane now; `main` while it follows the
+    /// main theme.
+    pub fn active_diff_theme(&self) -> &'static str {
+        self.diff_theme_name
+    }
+
     /// The active palette every renderer paints from.
     pub fn palette(&self) -> &Palette {
         &self.palette
+    }
+
+    /// The palette the diff pane paints from: its own theme's, else the main one.
+    pub fn diff_palette(&self) -> &Palette {
+        self.diff_theme.as_ref().map_or(&self.palette, |(p, _)| p)
+    }
+
+    /// The highlighter the diff pane's rows are built with: its own theme's, else the main one.
+    fn diff_highlighter(&self) -> &Highlighter {
+        self.diff_theme.as_ref().map_or(&self.highlighter, |(_, h)| h)
     }
 
     pub fn composing(&self) -> bool {
@@ -1675,7 +1794,13 @@ impl App {
         }
         self.diff_path = Some(path.clone());
         let (old, new) = self.content_sides(&path, previous_path.as_deref());
-        self.diff = self.cache.get(path, previous_path, &old, &new, &self.highlighter);
+        self.diff = self.cache.get(
+            path,
+            previous_path,
+            &old,
+            &new,
+            self.diff_theme.as_ref().map_or(&self.highlighter, |(_, h)| h),
+        );
         // Hold the new side as the preview's render input, the same current content the File
         // view previews. A non-markdown file, a notice, or a deleted file (empty new side)
         // holds nothing, so its toggle stays inert.
@@ -1729,7 +1854,11 @@ impl App {
             (FileDiff::too_large_notice(path.to_string()), String::new())
         } else {
             let content = worktree_content(&self.repo, path);
-            let diff = self.cache.get_file(path.to_string(), &content, &self.highlighter);
+            let diff = self.cache.get_file(
+                path.to_string(),
+                &content,
+                self.diff_theme.as_ref().map_or(&self.highlighter, |(_, h)| h),
+            );
             (diff, content)
         }
     }
@@ -2241,8 +2370,8 @@ impl App {
         self.markdown_cache.borrow_mut().get_expanded(
             text,
             width,
-            &self.highlighter,
-            &self.palette,
+            self.diff_highlighter(),
+            self.diff_palette(),
             expanded,
         )
     }
@@ -2814,8 +2943,13 @@ impl App {
                 continue;
             }
             let (old, new) = self.content_sides(&entry.path, entry.previous_path.as_deref());
-            let diff =
-                self.cache.get(entry.path, entry.previous_path, &old, &new, &self.highlighter);
+            let diff = self.cache.get(
+                entry.path,
+                entry.previous_path,
+                &old,
+                &new,
+                self.diff_theme.as_ref().map_or(&self.highlighter, |(_, h)| h),
+            );
             if hunk_row(&diff.rows, None, forward).is_some() {
                 return Some(row);
             }
@@ -4678,6 +4812,7 @@ impl App {
             out.push((A::MergeModified, Go));
         }
         out.push((A::Theme, Go));
+        out.push((A::DiffTheme, Go));
         if !self.store.is_empty() {
             out.push((A::Copy, Go));
             out.push((A::Export, Go));

@@ -1,0 +1,1627 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Shades of Purple
+Source: https://github.com/ahmadawais/shades-of-purple-vscode
+Via: ahmadawais.shades-of-purple v7.3.6
+Licence: MIT
+Copyright (c) 2015-present Ahmad Awais
+Converted from the VS Code colour theme JSON to tmTheme for diff-reckoner.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key>
+	<string>Shades of Purple</string>
+	<key>semanticClass</key>
+	<string>theme.dark.shades-of-purple</string>
+	<key>settings</key>
+	<array>
+		<dict>
+			<key>settings</key>
+			<dict>
+				<key>background</key>
+				<string>#2D2B55</string>
+				<key>foreground</key>
+				<string>#FFFFFF</string>
+				<key>caret</key>
+				<string>#FAD000</string>
+				<key>lineHighlight</key>
+				<string>#1F1F41</string>
+				<key>selection</key>
+				<string>#B362FF88</string>
+				<key>invisibles</key>
+				<string>#FFFFFF1A</string>
+				<key>gutterForeground</key>
+				<string>#A599E9</string>
+				<key>diffInserted</key>
+				<string>#3AD90020</string>
+				<key>diffDeleted</key>
+				<string>#EE3A4320</string>
+				<key>diffInsertedText</key>
+				<string>#3AD90020</string>
+				<key>diffDeletedText</key>
+				<string>#EE3A4320</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[COMMENTS] — The main comments color</string>
+			<key>scope</key>
+			<string>comment, punctuation.definition.comment</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#B362FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Entity] — The main Entity color</string>
+			<key>scope</key>
+			<string>entity</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Constant] — The main constants color</string>
+			<key>scope</key>
+			<string>constant</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF628C</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Keyword] — The main color for Keyword</string>
+			<key>scope</key>
+			<string>keyword, storage.type.class.js</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Meta] — The main color for Meta</string>
+			<key>scope</key>
+			<string>meta</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[invalid] — The main color for invalid</string>
+			<key>scope</key>
+			<string>invalid</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#EC3A37F5</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Meta Brace] — The main color for Meta Brace</string>
+			<key>scope</key>
+			<string>meta.brace, punctuation.definition.parameters.begin.js, punctuation.definition.parameters.end.js</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Punctuation] — The main color for Punctuation</string>
+			<key>scope</key>
+			<string>punctuation</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Punctuation] — Color for Punctuation Parameters</string>
+			<key>scope</key>
+			<string>punctuation.definition.parameters</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Punctuation] — Color for Punctuation Template Expression</string>
+			<key>scope</key>
+			<string>punctuation.definition.template-expression</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Storage] — The main color for Storage</string>
+			<key>scope</key>
+			<string>storage</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Storage] — The color for Storage Type Arrow Function</string>
+			<key>scope</key>
+			<string>storage.type.function.arrow</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[String]</string>
+			<key>scope</key>
+			<string>string, punctuation.definition.string</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#A5FF90</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[String] Template Color</string>
+			<key>scope</key>
+			<string>string.template, punctuation.definition.string.template</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#3AD900</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Support]</string>
+			<key>scope</key>
+			<string>support</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#80FFBB</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Support] Function Colors</string>
+			<key>scope</key>
+			<string>support.function</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Support] Variable Property DOM Colors</string>
+			<key>scope</key>
+			<string>support.variable.property.dom</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Variable]</string>
+			<key>scope</key>
+			<string>variable</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[INI] - Color for Entity</string>
+			<key>scope</key>
+			<string>source.ini entity, meta.embedded.block.ini, source.ini</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[INI] - Color for Keyword</string>
+			<key>scope</key>
+			<string>source.ini keyword, keyword.other.definition.ini</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[INI] - Color for Punctuation Definition</string>
+			<key>scope</key>
+			<string>source.ini punctuation.definition</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[INI] - Color for Punctuation Separator</string>
+			<key>scope</key>
+			<string>source.ini punctuation.separator, punctuation.separator.key-value.ini</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[CSS] - Color for Entity</string>
+			<key>scope</key>
+			<string>source.css entity, source.stylus entity</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#3AD900</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[CSS] - Color for Class Selector</string>
+			<key>scope</key>
+			<string>entity.other.attribute-name.class.css</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[CSS] - Color for ID Selector</string>
+			<key>scope</key>
+			<string>entity.other.attribute-name.id.css, entity.other.attribute-name.pseudo-class.css</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFB454</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[CSS] - Color for Element Selector</string>
+			<key>scope</key>
+			<string>entity.name.tag</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[CSS] - Color for Support</string>
+			<key>scope</key>
+			<string>source.css support, entity.name.tag.css, source.stylus support</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#A5FF90</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[CSS] - Color for Constant</string>
+			<key>scope</key>
+			<string>source.css constant, source.css support.constant, source.stylus constant, source.stylus support.constant</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[CSS] - Color for String</string>
+			<key>scope</key>
+			<string>source.css string, source.css punctuation.definition.string, source.stylus string, source.stylus punctuation.definition.string</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[CSS] - Color for Variable</string>
+			<key>scope</key>
+			<string>source.css variable, source.stylus variable</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[HTML] - Color for Entity Name</string>
+			<key>scope</key>
+			<string>text.html.basic entity.name, punctuation.definition.tag.html, entity.name.tag.inline.any.html, meta.tag.other.html, meta.tag.inline.any.html, punctuation.definition.tag.begin.html, punctuation.definition.tag.end.html, entity.name.tag, meta.tag.other.html, meta.tag.other.js, meta.tag.other.tsx, entity.name.tag.tsx, entity.name.tag.js, entity.name.tag, meta.tag.js, meta.tag.tsx, meta.tag.html</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[HTML] - Color for ID value</string>
+			<key>scope</key>
+			<string>meta.toc-list.id.html</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#A5FF90</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[HTML] - Color for Entity Other</string>
+			<key>scope</key>
+			<string>text.html.basic entity.other</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[HTML] - Color for Script Tag</string>
+			<key>scope</key>
+			<string>meta.tag.metadata.script.html entity.name.tag.html</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[HTML] - Quotes. Different color to handle expanded selection</string>
+			<key>scope</key>
+			<string>punctuation.definition.string.begin, punctuation.definition.string.end</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#92FC79</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[HTML/PUG] Equals Sign</string>
+			<key>scope</key>
+			<string>meta.tag.inline.any.html, meta.tag.other</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JSON] - Color for Support</string>
+			<key>scope</key>
+			<string>source.json support</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JSON] - Color for String</string>
+			<key>scope</key>
+			<string>source.json string, source.json punctuation.definition.string</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#92FC79</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] - Color for Storage Type Function</string>
+			<key>scope</key>
+			<string>source.js storage.type.function</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FB94FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] - Color for Variable Language</string>
+			<key>scope</key>
+			<string>variable.language, entity.name.type.class.js</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FB94FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] - Color for Inherited Component</string>
+			<key>scope</key>
+			<string>entity.other.inherited-class</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] - Color for React Extends keyword</string>
+			<key>scope</key>
+			<string>storage.type.extends.js, storage.type.class.jsdoc</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] — Docs Keywords</string>
+			<key>scope</key>
+			<string>punctuation.definition.block.tag.jsdoc</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] — Doc Var Types</string>
+			<key>scope</key>
+			<string>variable.other.jsdoc, entity.name.type.instance.jsdoc</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] — Var Types</string>
+			<key>scope</key>
+			<string>variable.other.constant</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT REACT] — JSX HTML</string>
+			<key>scope</key>
+			<string>punctuation.definition.tag.begin.js, punctuation.definition.tag.end.js</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT REACT] — JSX HTML Children Text</string>
+			<key>scope</key>
+			<string>meta.jsx.children.js</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] — Storage types</string>
+			<key>scope</key>
+			<string>storage.type, storage.type.class, storage.modifier, keyword.control, keyword.operator</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] — Docs Useless stuff</string>
+			<key>scope</key>
+			<string>punctuation.definition.bracket.curly</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#494685</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>Typescript React Assignment Operator</string>
+			<key>scope</key>
+			<string>keyword.operator.assignment.tsx, keyword.operator.assignment.jsx</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] Keyword Operator Assignment</string>
+			<key>scope</key>
+			<string>keyword.operator.assignment</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] Typescript/React Children</string>
+			<key>scope</key>
+			<string>meta.jsx.children.tsx</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] - Object keys</string>
+			<key>scope</key>
+			<string>meta.object-literal.key.js</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#80FFBB</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>Typescript/React Classnames and Modules</string>
+			<key>scope</key>
+			<string>entity.name.type.class.tsx, entity.name.type.class.jsx, variable.other.readwrite.alias.tsx, variable.other.readwrite.tsx, variable.other.readwrite.alias.ts, variable.other.readwrite.alias.jsx, variable.other.readwrite.alias.js, variable.other.object.tsx, variable.other.object.jsx, variable.other.object, support.class.component.tsx, support.class.component.jsx, entity.name.type.tsx, entity.name.type.jsx, variable.other.readwrite, variable.other.object.js</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] - .something</string>
+			<key>scope</key>
+			<string>variable.other.property, variable.other.object.property</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] - Color for Text inside JSX</string>
+			<key>scope</key>
+			<string>JSXNested</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JAVASCRIPT] - Parameters</string>
+			<key>scope</key>
+			<string>variable.parameter</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PYTHON] - Color for Self Argument</string>
+			<key>scope</key>
+			<string>variable.parameter.function.language.special.self.python</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PYTHON] - Functions</string>
+			<key>scope</key>
+			<string>meta.function-call.python, meta.function-call.generic.python, support.function.builtin.python</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[TYPESCRIPT] - Color for Entity Name Type</string>
+			<key>scope</key>
+			<string>source.ts entity.name.type</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#80FFBB</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[TYPESCRIPT] - Color for Keyword</string>
+			<key>scope</key>
+			<string>source.ts keyword</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[TYPESCRIPT] - Color for Punctuation Parameters</string>
+			<key>scope</key>
+			<string>source.ts punctuation.definition.parameters</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[TYPESCRIPT] - Color for Punctuation Arrow Parameters</string>
+			<key>scope</key>
+			<string>meta.arrow.ts punctuation.definition.parameters</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[TYPESCRIPT] - Color for Storage</string>
+			<key>scope</key>
+			<string>source.ts storage</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Heading Name Section</string>
+			<key>scope</key>
+			<string>entity.name.section.markdown, markup.heading.setext.1.markdown, markup.heading.setext.2.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+				<key>fontStyle</key>
+				<string>bold</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Diff Code Inserted Block</string>
+			<key>scope</key>
+			<string>markup.inserted.diff, punctuation.definition.inserted.diff</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#8EFA00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Diff Deleted Code Block</string>
+			<key>scope</key>
+			<string>markup.deleted.diff, punctuation.definition.deleted.diff</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#F16E6B</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Diff Meta text</string>
+			<key>scope</key>
+			<string>meta.embedded.block.diff</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Paragraph</string>
+			<key>scope</key>
+			<string>meta.paragraph.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Comment Punctuation</string>
+			<key>scope</key>
+			<string>punctuation.definition.from-file.diff, meta.diff.header.from-file</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#B362FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Text inside inline code block `code`</string>
+			<key>scope</key>
+			<string>markup.inline.raw.string.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#A599E9</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Quote Punctuation</string>
+			<key>scope</key>
+			<string>beginning.punctuation.definition.quote.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Quote Paragraph</string>
+			<key>scope</key>
+			<string>markup.quote.markdown meta.paragraph.markdown, punctuation.definition.quote.begin.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#A599E9</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Separator</string>
+			<key>scope</key>
+			<string>meta.separator.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Emphasis Bold</string>
+			<key>scope</key>
+			<string>markup.bold.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>fontStyle</key>
+				<string>bold</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Emphasis Italic</string>
+			<key>scope</key>
+			<string>markup.italic.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>fontStyle</key>
+				<string>italic</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Lists</string>
+			<key>scope</key>
+			<string>beginning.punctuation.definition.list.markdown, punctuation.definition.list.begin.markdown, markup.list.unnumbered.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Link/Image title string</string>
+			<key>scope</key>
+			<string>string.other.link.description.title.markdown punctuation.definition.string.markdown, meta.link.inline.markdown string.other.link.description.title.markdown, string.other.link.description.title.markdown punctuation.definition.string.begin.markdown, string.other.link.description.title.markdown punctuation.definition.string.end.markdown, meta.image.inline.markdown string.other.link.description.title.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#A5FF90</string>
+				<key>fontStyle</key>
+				<string></string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Link Title</string>
+			<key>scope</key>
+			<string>meta.link.inline.markdown string.other.link.title.markdown, meta.link.reference.markdown string.other.link.title.markdown, meta.link.reference.def.markdown markup.underline.link.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+				<key>fontStyle</key>
+				<string>underline</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Link/Image Title</string>
+			<key>scope</key>
+			<string>markup.underline.link.markdown, string.other.link.description.title.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#A599E9</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Inline Code</string>
+			<key>scope</key>
+			<string>fenced_code.block.language, markup.inline.raw.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - Color for Punctuation — Heading, `Code` and fenced ```code blocks```, **Bold**</string>
+			<key>scope</key>
+			<string>punctuation.definition.markdown, punctuation.definition.raw.markdown, punctuation.definition.heading.markdown, punctuation.definition.bold.markdown, punctuation.definition.italic.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#494685</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - LINK Brackets</string>
+			<key>scope</key>
+			<string>meta.link.inline.markdown punctuation.definition.string.begin.markdown, meta.link.inline.markdown punctuation.definition.string.end.markdown, meta.link.reference.markdown punctuation.definition.string.begin.markdown, meta.link.reference.markdown punctuation.definition.string.end.markdown, string.other.link.description.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - IMG LINK Brackets</string>
+			<key>scope</key>
+			<string>meta.image.inline.markdown punctuation.definition.string.begin.markdown, meta.image.inline.markdown punctuation.definition.string.end.markdown, string.other.link.description.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[MARKDOWN] - LINK ALT URI</string>
+			<key>scope</key>
+			<string>markup.underline.link.markdown, punctuation.definition.metadata.markdown, markup.underline.link.image.markdown, constant.other.reference.link.markdown, punctuation.definition.constant.markdown, punctuation.definition.constant.begin.markdown, punctuation.definition.constant.end.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#A599E9</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PUG] - Color for Entity Name</string>
+			<key>scope</key>
+			<string>text.jade entity.name</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PUG] - Types</string>
+			<key>scope</key>
+			<string>storage.type.function.pug</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PUG] - Var Params</string>
+			<key>scope</key>
+			<string>variable.parameter.function.js</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PUG] - Imports</string>
+			<key>scope</key>
+			<string>variable.control.import.include.pug</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#92FC79</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PUG] - Color for String Interpolated</string>
+			<key>scope</key>
+			<string>text.jade string.interpolated</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[C#] - Color for Annotations</string>
+			<key>scope</key>
+			<string>storage.type.cs</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[C#] - Color for Properties</string>
+			<key>scope</key>
+			<string>entity.name.variable.property.cs</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[C#] - Color for Storage modifiers</string>
+			<key>scope</key>
+			<string>storage.modifier.cs</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#80FFBB</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PHP] - Color for Entity</string>
+			<key>scope</key>
+			<string>source.php entity, variable.other.class.php</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PHP] - Docs Keywords</string>
+			<key>scope</key>
+			<string>keyword.other.phpdoc.php</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PHP] - Functions</string>
+			<key>scope</key>
+			<string>entity.name.function.php, support.function.basic_functions.php, meta.function-call.php, variable.other.property</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PHP] - Variables</string>
+			<key>scope</key>
+			<string>variable.other.php, punctuation.definition.variable.php, variable.other.global.php, variable.language.this.php</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PHP] - Color for Storage Modifiers</string>
+			<key>scope</key>
+			<string>storage.modifier.php, keyword.other.namespace.php</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[YML] — KEYWORDS</string>
+			<key>scope</key>
+			<string>entity.name.tag.yaml</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[YML] — Punctuation</string>
+			<key>scope</key>
+			<string>punctuation.definition.block.sequence.item.yaml</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PHP] - Keywords for definition</string>
+			<key>scope</key>
+			<string>storage.type.function.php, meta.function.parameters.php</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FB94FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PHP Blade] - Keywords for definition</string>
+			<key>scope</key>
+			<string>keyword.blade</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PHP Blade] - Punctuation</string>
+			<key>scope</key>
+			<string>begin.bracket.round.blade.php, end.bracket.round.blade.php</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[PHP Blade] - Construct</string>
+			<key>scope</key>
+			<string>support.function.construct.begin.blade, support.function.construct.end.blade</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[GO] - Keywords for definition</string>
+			<key>scope</key>
+			<string>keyword.package.go, keyword.import.go</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[GO] - Functions</string>
+			<key>scope</key>
+			<string>keyword.function.go</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FB94FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[GO] - Variables</string>
+			<key>scope</key>
+			<string>variable.other.assignment.go</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[GO] - Punctuation</string>
+			<key>scope</key>
+			<string>punctuation.definition.string.begin.go, punctuation.definition.string.end.go, support.function.go</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[RUBY] - Interpolation Quoted Double &amp; Block Inline</string>
+			<key>scope</key>
+			<string>punctuation.section.embedded.end.ruby, punctuation.section.embedded.begin.ruby, punctuation.section.scope.begin.ruby, punctuation.section.scope.end.ruby</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[RUBY] - Constant</string>
+			<key>scope</key>
+			<string>variable.other.constant.ruby</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#80FFBB</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[RUBY] - Class</string>
+			<key>scope</key>
+			<string>entity.name.type.class.ruby</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FB94FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[RUBY] - Variables</string>
+			<key>scope</key>
+			<string>variable.other.block.ruby, variable.other.ruby</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[RUBY] - Separators</string>
+			<key>scope</key>
+			<string>punctuation.separator.other.ruby</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[RUBY] - Special Methods</string>
+			<key>scope</key>
+			<string>keyword.other.special-method.ruby</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FFEE80</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[SHELL] - Function Keyword</string>
+			<key>scope</key>
+			<string>storage.type.function.shell</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FB94FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[SHELL] - Var Other</string>
+			<key>scope</key>
+			<string>variable.other.special.shell, punctuation.definition.variable.shell</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[GRAPHQL] — Variable</string>
+			<key>scope</key>
+			<string>variable.graphql</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAEFA5</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[GRAPHQL] — Keywords</string>
+			<key>scope</key>
+			<string>keyword.operation.graphql</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FB94FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[SQL] Source</string>
+			<key>scope</key>
+			<string>source.sql</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[SQL] — Keywords</string>
+			<key>scope</key>
+			<string>source.sql keyword.other, support.function.mysqli.php</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAEFA5</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[SQL] — Functions Used</string>
+			<key>scope</key>
+			<string>support.function.mysqli.php, source.sql support.function</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[SQL] — RegExp String</string>
+			<key>scope</key>
+			<string>string.regexp, string.regexp keyword.other</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[SQL] — Other keywords</string>
+			<key>scope</key>
+			<string>keyword.other.DML.sql</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[TOML] — SYNTAX</string>
+			<key>scope</key>
+			<string>punctuation.definition.table.array.toml</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[TOML] — Other keywords</string>
+			<key>scope</key>
+			<string>entity.other.attribute-name.table.array.toml, entity.other.attribute-name.table.toml</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[TOML] — Keywords</string>
+			<key>scope</key>
+			<string>keyword.key.toml</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[DOCKER] — Keywords</string>
+			<key>scope</key>
+			<string>keyword.other.special-method.dockerfile</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[RUST] — Keywords</string>
+			<key>scope</key>
+			<string>keyword.other.rust</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[RUST] — Keyword Fn</string>
+			<key>scope</key>
+			<string>keyword.other.fn.rust</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FB94FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[ENV] — Keyword</string>
+			<key>scope</key>
+			<string>keyword.other.env</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[ENV] — Variable</string>
+			<key>scope</key>
+			<string>variable.other.env</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[ENV] — Source</string>
+			<key>scope</key>
+			<string>source.env</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#E1EFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[ENV] — Punctuation</string>
+			<key>scope</key>
+			<string>keyword.other.template.begin.env, keyword.other.template.end.env, keyword.operator.assignment.env</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JS] — Double Destructure of Object</string>
+			<key>scope</key>
+			<string>variable.object.property</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#9EFFFF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[JS] — Regex</string>
+			<key>scope</key>
+			<string>string.regexp.js</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FB94FF</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[CSV] — Keyword 2</string>
+			<key>scope</key>
+			<string>keyword.rainbow2</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[NIM] — Keyword</string>
+			<key>scope</key>
+			<string>keyword.other.nim, keyword.other</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9D00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[NIM] — boolean</string>
+			<key>scope</key>
+			<string>keyword.boolean</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF628C</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[NIM] — {}</string>
+			<key>scope</key>
+			<string>punctuation.pragma.start.nim, punctuation.pragma.end.nim, entity.name.function.nim</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FAD000</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>Deleted</string>
+			<key>scope</key>
+			<string>markup.deleted</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#F16E6B</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>Inserted</string>
+			<key>scope</key>
+			<string>markup.inserted</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#8EFA00</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>Underline</string>
+			<key>scope</key>
+			<string>markup.underline</string>
+			<key>settings</key>
+			<dict>
+				<key>fontStyle</key>
+				<string>underline</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[ITALICS] All the awesome italics live here.</string>
+			<key>scope</key>
+			<string>modifier, this, comment, storage.modifier, entity.other.attribute-name, entity.other.attribute-name.html, punctuation.definition.comment, text.html.basic entity.other, entity.other.attribute-name, markup.quote.markdown meta.paragraph.markdown, markup.italic.markdown, text.jade entity.other.attribute-name.tag, keyword.control.from, entity.other.attribute-name.tag.pug</string>
+			<key>settings</key>
+			<dict>
+				<key>fontStyle</key>
+				<string>italic</string>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

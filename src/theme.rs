@@ -605,6 +605,24 @@ const fn hex(rgb: u32) -> Color {
 /// (lighter for a dark theme, darker for a light one); diff fills tint `base` with the
 /// add/remove accent, kept legible against `text`.
 fn derive(a: Anchors, appearance: Appearance) -> Palette {
+    derive_palette(
+        a.base,
+        a.text,
+        [a.red, a.green, a.yellow, a.orange, a.purple, a.blue],
+        appearance,
+    )
+}
+
+/// [`derive`] from loose colors: `accents` is red, green, yellow, orange, purple, blue. The
+/// diff-only themes build their palettes through it from a syntax theme's own colors.
+pub(crate) fn derive_palette(
+    base: Color,
+    text: Color,
+    accents: [Color; 6],
+    appearance: Appearance,
+) -> Palette {
+    let [red, green, yellow, orange, purple, blue] = accents;
+    let a = Anchors { base, text, red, green, yellow, orange, purple, blue };
     let pole = match appearance {
         Appearance::Dark => WHITE,
         Appearance::Light => BLACK,
@@ -640,7 +658,7 @@ const BLACK: Color = Color::Rgb(0x00, 0x00, 0x00);
 
 /// The lowest contrast a diff fill keeps against the row's text, so code on a fill stays
 /// legible on any base.
-const MIN_FILL_CONTRAST: f64 = 4.5;
+pub(crate) const MIN_FILL_CONTRAST: f64 = 4.5;
 
 /// The lowest contrast a derived syntax color keeps against `base`: below body text's 4.5, so
 /// accents keep their hue, but clear of the pale ANSI yellows some light schemes carry.
@@ -691,7 +709,7 @@ fn saturated(c: Color) -> Color {
 }
 
 /// Linear per-channel blend: `t` of the way from `from` to `to` (0.0 = `from`, 1.0 = `to`).
-fn blend(from: Color, to: Color, t: f64) -> Color {
+pub(crate) fn blend(from: Color, to: Color, t: f64) -> Color {
     let (fr, fg, fb) = channels(from);
     let (tr, tg, tb) = channels(to);
     let mix = |lhs: u8, rhs: u8| (f64::from(lhs) * (1.0 - t) + f64::from(rhs) * t).round() as u8;
@@ -699,7 +717,7 @@ fn blend(from: Color, to: Color, t: f64) -> Color {
 }
 
 /// The WCAG contrast ratio between two colors (1.0 .. 21.0).
-fn contrast(fg: Color, bg: Color) -> f64 {
+pub(crate) fn contrast(fg: Color, bg: Color) -> f64 {
     let (lf, lb) = (luminance(fg), luminance(bg));
     let (hi, lo) = if lf >= lb { (lf, lb) } else { (lb, lf) };
     (hi + 0.05) / (lo + 0.05)

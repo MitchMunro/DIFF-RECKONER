@@ -66,10 +66,13 @@ impl Config {
     }
 }
 
-const PLUGIN_CONFIG_KEYS: [&str; 12] = [
+const PLUGIN_CONFIG_KEYS: [&str; 15] = [
     "theme",
     "dark_theme",
     "light_theme",
+    "diff_theme",
+    "diff_dark_theme",
+    "diff_light_theme",
     "default_scope",
     "navigator_position",
     "toggle_placement",
@@ -163,6 +166,13 @@ pub struct PluginConfig {
     dark_theme: String,
     /// The theme `auto` uses on a light terminal.
     light_theme: String,
+    /// `main` paints the diff pane in the main theme; `auto` in `diff_dark_theme` or
+    /// `diff_light_theme`, matching the terminal.
+    diff_theme: String,
+    /// The diff theme `auto` uses on a dark terminal; unset follows the main theme.
+    diff_dark_theme: Option<String>,
+    /// The diff theme `auto` uses on a light terminal; unset follows the main theme.
+    diff_light_theme: Option<String>,
     default_scope: crate::model::Scope,
     navigator_position: NavigatorPosition,
     toggle_placement: TogglePlacement,
@@ -184,6 +194,9 @@ impl Default for PluginConfig {
             theme: crate::theme::DEFAULT.to_owned(),
             dark_theme: crate::theme::DEFAULT_DARK.to_owned(),
             light_theme: crate::theme::DEFAULT_LIGHT.to_owned(),
+            diff_theme: crate::diff_theme::MAIN.to_owned(),
+            diff_dark_theme: None,
+            diff_light_theme: None,
             default_scope: crate::model::Scope::Uncommitted,
             navigator_position: NavigatorPosition::Right,
             toggle_placement: TogglePlacement::Split,
@@ -218,6 +231,25 @@ impl PluginConfig {
         } else {
             &self.theme
         }
+    }
+
+    /// Whether the diff pane is pinned to the main theme — the diff picker's top row.
+    pub fn diff_follows_main(&self) -> bool {
+        self.diff_theme == crate::diff_theme::MAIN
+    }
+
+    /// The diff theme `auto` picks for `appearance`; `None` follows the main theme.
+    pub fn diff_theme_for(&self, appearance: crate::theme::Appearance) -> Option<&str> {
+        match appearance {
+            crate::theme::Appearance::Dark => self.diff_dark_theme.as_deref(),
+            crate::theme::Appearance::Light => self.diff_light_theme.as_deref(),
+        }
+    }
+
+    /// The diff theme this snapshot paints the diff pane with on this terminal; `None` paints
+    /// it in the main theme.
+    pub fn active_diff_theme(&self) -> Option<&str> {
+        if self.diff_follows_main() { None } else { self.diff_theme_for(crate::theme::detected()) }
     }
 
     /// The scope a fresh pane is built with — startup and config recovery. A reread never
@@ -275,6 +307,9 @@ impl PluginConfig {
             "theme": self.theme,
             "dark_theme": self.dark_theme,
             "light_theme": self.light_theme,
+            "diff_theme": self.diff_theme,
+            "diff_dark_theme": self.diff_dark_theme,
+            "diff_light_theme": self.diff_light_theme,
             "default_scope": self.default_scope.name(),
             "navigator_position": self.navigator_position.as_str(),
             "toggle_placement": self.toggle_placement.as_str(),
@@ -342,6 +377,32 @@ pub fn save_theme(
 pub fn save_follow_terminal(dir: &Path) -> std::io::Result<()> {
     let value = format!("\"{}\"", crate::theme::TERMINAL);
     edit_config(dir, |text| with_top_level_key(text, "theme", &value, None))
+}
+
+/// Save `name` as the diff theme `auto` uses on an `appearance` terminal: set
+/// `diff_dark_theme` or `diff_light_theme` and `diff_theme = "auto"` in `<dir>/config.toml`,
+/// so the save paints. Every other line is kept as written.
+pub fn save_diff_theme(
+    dir: &Path,
+    appearance: crate::theme::Appearance,
+    name: &str,
+) -> std::io::Result<()> {
+    let key = match appearance {
+        crate::theme::Appearance::Dark => "diff_dark_theme",
+        crate::theme::Appearance::Light => "diff_light_theme",
+    };
+    let auto = format!("\"{}\"", crate::diff_theme::AUTO);
+    edit_config(dir, |text| {
+        let text = with_top_level_key(text, key, &format!("\"{name}\""), None);
+        with_top_level_key(&text, "diff_theme", &auto, None)
+    })
+}
+
+/// Pin the diff pane to the main theme: `diff_theme = "main"` in `<dir>/config.toml`. The
+/// `diff_dark_theme`/`diff_light_theme` pair stays for when the pin is dropped.
+pub fn save_diff_follow_main(dir: &Path) -> std::io::Result<()> {
+    let value = format!("\"{}\"", crate::diff_theme::MAIN);
+    edit_config(dir, |text| with_top_level_key(text, "diff_theme", &value, None))
 }
 
 /// Rewrite `<dir>/config.toml` through `edit`, creating the directory and file if missing.
@@ -459,6 +520,29 @@ fn parse_plugin_config(path: &Path) -> Result<PluginConfig, PluginConfigError> {
             ));
         }
         theme.clone_into(slot);
+    }
+    if let Some(value) = table.get("diff_theme") {
+        let pin = string_value(path, "diff_theme", value, "one of main, auto")?;
+        if ![crate::diff_theme::MAIN, crate::diff_theme::AUTO].contains(&pin) {
+            return Err(value_error(path, "diff_theme", "one of main, auto"));
+        }
+        pin.clone_into(&mut config.diff_theme);
+    }
+    for (key, slot) in [
+        ("diff_dark_theme", &mut config.diff_dark_theme),
+        ("diff_light_theme", &mut config.diff_light_theme),
+    ] {
+        let Some(value) = table.get(key) else { continue };
+        let theme = string_value(path, key, value, "a built-in diff theme name")?;
+        if !crate::diff_theme::is_builtin(theme) {
+            return Err(PluginConfigError::new(
+                path,
+                format!(
+                    "invalid value for `{key}`: {theme:?}; expected a built-in diff theme name"
+                ),
+            ));
+        }
+        *slot = Some(theme.to_owned());
     }
     if let Some(value) = table.get("default_scope") {
         config.default_scope =
@@ -839,6 +923,10 @@ mod tests {
             ("dark_theme = \"unknown\"\n", "`dark_theme`"),
             // `auto` names no theme of its own, so it cannot be one half of the pair.
             ("light_theme = \"auto\"\n", "`light_theme`"),
+            ("diff_theme = \"xcode-dark\"\n", "`diff_theme`"),
+            // The diff themes are their own catalog: a main-theme name is not one.
+            ("diff_dark_theme = \"cobalt\"\n", "`diff_dark_theme`"),
+            ("diff_light_theme = \"main\"\n", "`diff_light_theme`"),
             ("default_scope = \"weekly\"\n", "`default_scope`"),
             ("default_scope = \"last-turn\"\n", "`default_scope`"),
             // `commits` is never a start scope: the pane holds no pick yet.
@@ -1092,6 +1180,28 @@ mod tests {
         assert_eq!(config.theme(), "auto");
         assert_eq!(config.theme_for(Appearance::Dark), "cobalt2");
         assert_eq!(config.theme_for(Appearance::Light), "dayfox");
+    }
+
+    #[test]
+    fn the_diff_pane_follows_the_main_theme_until_a_side_is_saved() {
+        use crate::theme::Appearance;
+        let dir = tempfile::tempdir().unwrap();
+        let defaults = PluginConfig::default();
+        assert!(defaults.diff_follows_main());
+        assert_eq!(defaults.active_diff_theme(), None);
+
+        // A side's save sets its key and unpins `main`; the other side still follows it.
+        super::save_diff_theme(dir.path(), Appearance::Dark, "github-dark").unwrap();
+        let config = super::plugin_config_in(dir.path()).unwrap();
+        assert!(!config.diff_follows_main());
+        assert_eq!(config.active_diff_theme(), Some("github-dark"));
+        assert_eq!(config.diff_theme_for(Appearance::Light), None);
+
+        // Following the main theme pins it and keeps the side for when the pin drops.
+        super::save_diff_follow_main(dir.path()).unwrap();
+        let config = super::plugin_config_in(dir.path()).unwrap();
+        assert_eq!(config.active_diff_theme(), None);
+        assert_eq!(config.diff_theme_for(Appearance::Dark), Some("github-dark"));
     }
 
     #[test]

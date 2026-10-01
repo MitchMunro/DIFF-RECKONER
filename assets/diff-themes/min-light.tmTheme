@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Min Light
+Source: https://github.com/miguelsolorio/min-theme
+Via: miguelsolorio.min-theme v1.5.0
+Licence: MIT
+Copyright (c) 2018-2021 Miguel Solorio
+Converted from the VS Code colour theme JSON to tmTheme for diff-reckoner.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key>
+	<string>Min Light</string>
+	<key>semanticClass</key>
+	<string>theme.light.min-light</string>
+	<key>settings</key>
+	<array>
+		<dict>
+			<key>settings</key>
+			<dict>
+				<key>background</key>
+				<string>#FFFFFF</string>
+				<key>foreground</key>
+				<string>#212121</string>
+				<key>gutterForeground</key>
+				<string>#CCCCCC</string>
+				<key>diffInserted</key>
+				<string>#B7E7A44B</string>
+				<key>diffDeleted</key>
+				<string>#E597AF52</string>
+				<key>diffInsertedText</key>
+				<string>#B7E7A44B</string>
+				<key>diffDeletedText</key>
+				<string>#E597AF52</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>keyword.operator.accessor, meta.group.braces.round.function.arguments, meta.template.expression, markup.fenced_code meta.embedded.block</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#24292E</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>emphasis</string>
+			<key>settings</key>
+			<dict>
+				<key>fontStyle</key>
+				<string>italic</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>strong, markup.heading.markdown, markup.bold.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>fontStyle</key>
+				<string>bold</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>markup.italic.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>fontStyle</key>
+				<string>italic</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>meta.link.inline.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#1976D2</string>
+				<key>fontStyle</key>
+				<string>underline</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>string, markup.fenced_code, markup.inline</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#2B5581</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>comment, string.quoted.docstring.multi</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#C2C3C5</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>constant.numeric, constant.language, constant.other.placeholder, constant.character.format.placeholder, variable.language.this, variable.other.object, variable.other.class, variable.other.constant, meta.property-name, meta.property-value, support</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#1976D2</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>keyword, storage.modifier, storage.type, storage.control.clojure, entity.name.function.clojure, entity.name.tag.yaml, support.function.node, support.type.property-name.json, punctuation.separator.key-value, punctuation.definition.template-expression</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#D32F2F</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>variable.parameter.function</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#FF9800</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>support.function, entity.name.type, entity.other.inherited-class, meta.function-call, meta.instance.constructor, entity.other.attribute-name, entity.name.function, constant.keyword.clojure</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#6F42C1</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>entity.name.tag, string.quoted, string.regexp, string.interpolated, string.template, string.unquoted.plain.out.yaml, keyword.other.template</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#22863A</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>token.info-token</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#316BCD</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>token.warn-token</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#CD9731</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>token.error-token</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#CD3131</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>token.debug-token</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#800080</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>strong, markup.heading.markdown, markup.bold.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#6F42C1</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>scope</key>
+			<string>punctuation.definition.arguments, punctuation.definition.dict, punctuation.separator, meta.function-call.arguments</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#212121</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Custom] Markdown links</string>
+			<key>scope</key>
+			<string>markup.underline.link, punctuation.definition.metadata.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#22863A</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Custom] Markdown list</string>
+			<key>scope</key>
+			<string>beginning.punctuation.definition.list.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#6F42C1</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>name</key>
+			<string>[Custom] Markdown punctuation definition brackets</string>
+			<key>scope</key>
+			<string>punctuation.definition.string.begin.markdown, punctuation.definition.string.end.markdown, string.other.link.title.markdown, string.other.link.description.markdown</string>
+			<key>settings</key>
+			<dict>
+				<key>foreground</key>
+				<string>#D32F2F</string>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

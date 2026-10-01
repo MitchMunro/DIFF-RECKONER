@@ -13,6 +13,7 @@ enum Priority: Int, Codable, CaseIterable, Identifiable {
     case low = 0
     case medium
     case high
+    case urgent
 
     var id: Int { rawValue }
 
@@ -21,6 +22,7 @@ enum Priority: Int, Codable, CaseIterable, Identifiable {
         case .low: return "Low"
         case .medium: return "Medium"
         case .high: return "High"
+        case .urgent: return "Urgent"
         }
     }
 
@@ -29,6 +31,7 @@ enum Priority: Int, Codable, CaseIterable, Identifiable {
         case .low: .green
         case .medium: .orange
         case .high: .red
+        case .urgent: .purple
         }
     }
 }
@@ -123,14 +126,24 @@ final class TaskStore: ObservableObject {
     }
 
     func delete(at offsets: IndexSet) {
-        let ids = offsets.map { visibleTasks[$0].id }
+        let visible = visibleTasks
+        let ids = Set(offsets.map { visible[$0].id })
         tasks.removeAll { ids.contains($0.id) }
+    }
+
+    @discardableResult
+    func clearCompleted() -> Int {
+        let before = tasks.count
+        tasks.removeAll(where: \.isDone)
+        return before - tasks.count
     }
 
     func load() async throws {
         do {
-            let (data, _) = try await URLSession.shared.data(from: fileURL)
-            tasks = try JSONDecoder().decode([TaskItem].self, from: data)
+            let data = try Data(contentsOf: fileURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            tasks = try decoder.decode([TaskItem].self, from: data)
         } catch let error as DecodingError {
             throw TaskStoreError.decodingFailed(underlying: error)
         } catch {
@@ -140,7 +153,9 @@ final class TaskStore: ObservableObject {
 
     private func save(_ tasks: [TaskItem]) {
         do {
-            let data = try JSONEncoder().encode(tasks)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(tasks)
             try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
         } catch {
             logger.error("Save failed: \(error.localizedDescription, privacy: .public)")
@@ -176,7 +191,7 @@ struct TaskListView: View {
                     }
                     .onDelete(perform: store.delete)
                 } header: {
-                    Text("\(store.visibleTasks.count) tasks")
+                    Text("\(store.visibleTasks.count) tasks · \(store.completedCount) done")
                 } footer: {
                     if store.overdueCount > 0 {
                         Text("\(store.overdueCount) overdue")
@@ -186,6 +201,10 @@ struct TaskListView: View {
             }
             .navigationTitle("Tasks")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Clear done") { store.clearCompleted() }
+                        .disabled(store.completedCount == 0)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("Filter", systemImage: "line.3.horizontal.decrease.circle") {
                         Button("All") { store.filter = nil }
@@ -249,7 +268,7 @@ private struct TaskRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .opacity(task.isDone ? 0.5 : 1.0)
+        .opacity(task.isDone ? 0.4 : 1.0)
         .accessibilityElement(children: .combine)
     }
 }
