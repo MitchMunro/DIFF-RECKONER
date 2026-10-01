@@ -18,6 +18,7 @@ pub mod editor;
 pub mod export;
 pub mod file_list;
 pub mod git;
+pub(crate) mod grammar;
 pub mod highlight;
 pub mod keymap;
 #[macro_use]

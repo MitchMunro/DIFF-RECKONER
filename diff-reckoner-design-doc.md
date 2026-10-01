@@ -268,8 +268,11 @@ Two layers, handled differently.
 resolves these at draw time, so any palette or light/dark switch applies
 instantly with no code. This is lazygit's approach and it is never wrong.
 
-**Syntax highlighting** keeps syntect, with the theme chosen by detected
-background:
+**Syntax highlighting** parses with tree-sitter, using Helix's highlight queries
+(`assets/queries/`). Each capture is named as a TextMate scope, so the `.tmTheme` files color it
+through syntect's theme half. A language with no compiled-in grammar is plain text. (Migration
+in progress: Swift and Kotlin are on tree-sitter; the rest still use syntect's grammars.) The
+theme is chosen by detected background:
 
 1. Probe at startup, **before `enable_raw_mode()`** — `COLORFGBG` first, then
    an OSC 11 query with a ~200 ms timeout, defaulting to dark on failure.

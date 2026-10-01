@@ -106,6 +106,10 @@ Theme palettes ported from terminal color schemes come from
 [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) (MIT); each theme's
 copyright stays with its author. The diff-only syntax themes (`T`) in `assets/diff-themes/` are
 all MIT; [MANIFEST.md](assets/diff-themes/MANIFEST.md) lists each one's source and copyright.
+The tree-sitter highlight queries in `assets/queries/<lang>/highlights.scm` are copied from
+[Helix](https://github.com/helix-editor/helix) and stay under the Mozilla Public License 2.0
+([LICENSE-MPL-2.0](assets/queries/LICENSE-MPL-2.0)); their source is this repository. The
+`diff-reckoner.scm` files beside them are MIT.
 The Swift grammar in `assets/syntaxes/` extends the
 [Swift-Sublime-Package](https://github.com/quiqueg/Swift-Sublime-Package) one (MIT, Copyright (c)
 2014 Matthew Alexander; [LICENSE-Swift](assets/syntaxes/LICENSE-Swift)).

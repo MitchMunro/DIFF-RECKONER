@@ -23,11 +23,17 @@ ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 similar = { version = "3.1.1", features = ["text"] }
+streaming-iterator = "0.1"
 # Dumps + fancy-regex only: no yaml-load (we read prebuilt binary syntax dumps, so the
 # unmaintained yaml-rust never enters the tree), no onig (pure-Rust regex engine).
 syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "dump-load", "plist-load", "yaml-load"] }
 terminal-colorsaurus = "1.0.3"
 toml = "1.1"
+tree-sitter = "0.27"
+# Pinned to the commits Helix pins in its languages.toml: assets/queries/ holds Helix's queries,
+# which name these exact grammars' nodes. Bump both together.
+tree-sitter-kotlin = { git = "https://github.com/fwcd/tree-sitter-kotlin", rev = "f66d2908542e93c0204c6c241f794afe4e9cd5d1", version = "0.4.0" }
+tree-sitter-swift = { git = "https://github.com/alex-pinkus/tree-sitter-swift", rev = "7b7909f2f6b9414be0958275f4c8e5d69c3bca43", version = "0.7.0" }
 two-face = "0.5.1"
 unicode-width = "0.2"
 

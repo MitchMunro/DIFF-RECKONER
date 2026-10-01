@@ -1,4 +1,5 @@
-//! Syntax highlighting via `syntect`, themed by the active theme's paired syntax theme.
+//! Syntax highlighting, themed by the active theme's paired syntax theme: tree-sitter for the
+//! languages in [`crate::grammar`], `syntect`'s `TextMate` grammars for the rest.
 //!
 //! The highlighter is rebuilt when the theme
 //! changes and produces per-line foreground spans; the background is the palette's `base`,
@@ -14,9 +15,7 @@ use syntect::highlighting::{
     Color as SyntectColor, FontStyle, HighlightIterator, HighlightState,
     Highlighter as SyntectHighlighter, StyleModifier, Theme, ThemeItem, ThemeSet, ThemeSettings,
 };
-use syntect::parsing::{
-    ParseState, ScopeStack, SyntaxDefinition, SyntaxReference, SyntaxSet, SyntaxSetBuilder,
-};
+use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 use std::sync::OnceLock;
@@ -34,31 +33,6 @@ const DEFAULT_FG: Color = Color::Rgb(0xcd, 0xd6, 0xf4);
 fn syntaxes() -> &'static SyntaxSet {
     static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
     SYNTAXES.get_or_init(two_face::syntax::extra_newlines)
-}
-
-/// The vendored Swift grammar in a set of its own, which a lookup tries ahead of
-/// [`syntaxes`]. Its own set, because adding it to the bundled one relinks every syntax there
-/// (a third of a second) on the first highlight.
-fn swift_syntaxes() -> &'static SyntaxSet {
-    static SWIFT_SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SWIFT_SET.get_or_init(|| {
-        let mut builder = SyntaxSetBuilder::new();
-        match SyntaxDefinition::load_from_str(SWIFT, true, None) {
-            Ok(swift) => builder.add(swift),
-            Err(e) => crate::logln!("vendored Swift grammar failed to load: {e}"),
-        }
-        builder.build()
-    })
-}
-
-/// The Swift grammar, extended past the bundled one to scope declarations, members, and type
-/// names (see its header).
-const SWIFT: &str = include_str!("../assets/syntaxes/Swift.sublime-syntax");
-
-/// The set `syntax` belongs to, which its parse must run against.
-fn set_of(syntax: &SyntaxReference) -> &'static SyntaxSet {
-    let swift = swift_syntaxes();
-    if swift.syntaxes().iter().any(|s| std::ptr::eq(s, syntax)) { swift } else { syntaxes() }
 }
 
 /// The two-face embedded theme set, deserialized once and shared — like [`syntaxes`], so a
@@ -119,28 +93,25 @@ impl Checkpoint {
     }
 }
 
-/// A highlight in progress: the syntect state carried from line to line, and the set its
-/// syntax parses against.
+/// A highlight in progress: the syntect state carried from line to line.
 struct Run<'a> {
     highlighter: SyntectHighlighter<'a>,
     parse: ParseState,
     highlight: HighlightState,
-    set: &'static SyntaxSet,
 }
 
 impl<'a> Run<'a> {
     fn start(syntax: &SyntaxReference, theme: &'a Theme) -> Self {
         let highlighter = SyntectHighlighter::new(theme);
         let highlight = HighlightState::new(&highlighter, ScopeStack::new());
-        Self { highlighter, parse: ParseState::new(syntax), highlight, set: set_of(syntax) }
+        Self { highlighter, parse: ParseState::new(syntax), highlight }
     }
 
-    fn resume(syntax: &SyntaxReference, theme: &'a Theme, at: &Checkpoint) -> Self {
+    fn resume(theme: &'a Theme, at: &Checkpoint) -> Self {
         Self {
             highlighter: SyntectHighlighter::new(theme),
             parse: at.parse.clone(),
             highlight: at.highlight.clone(),
-            set: set_of(syntax),
         }
     }
 
@@ -154,7 +125,7 @@ impl<'a> Run<'a> {
 
     /// Highlight one line (with its ending) and advance the state past it.
     fn line(&mut self, line: &str, default_fg: Color) -> Vec<Span> {
-        match self.parse.parse_line(line, self.set) {
+        match self.parse.parse_line(line, syntaxes()) {
             Ok(ops) => HighlightIterator::new(&mut self.highlight, &ops, line, &self.highlighter)
                 .map(|(style, text)| Span {
                     text: text.trim_end_matches('\n').to_string(),
@@ -209,7 +180,7 @@ impl Memo {
         let kept = checkpoints.iter().rposition(|c| c.line <= prefix).map_or(0, |k| k + 1);
         let mut tail = checkpoints.split_off(kept).into_iter().peekable();
         let (mut run, start) = match checkpoints.last() {
-            Some(at) => (Run::resume(syntax, theme, at), at.line),
+            Some(at) => (Run::resume(theme, at), at.line),
             None => (Run::start(syntax, theme), 0),
         };
         let mut spans = old.spans;
@@ -273,6 +244,9 @@ impl Highlighter {
     /// default color. `language` matches as an extension first (paths), then as a token
     /// name (markdown fence tags like `rust` or `python`).
     pub fn highlight(&self, content: &str, language: Option<&str>) -> Vec<Vec<Span>> {
+        if let Some(spans) = self.highlight_tree(content, language) {
+            return spans;
+        }
         let Some((syntax, theme)) = self.resolve(language) else { return self.plain(content) };
         let mut run = Run::start(syntax, theme);
         LinesWithEndings::from(content).map(|line| run.line(line, self.default_fg)).collect()
@@ -287,6 +261,10 @@ impl Highlighter {
         content: &str,
         language: Option<&str>,
     ) -> Vec<Vec<Span>> {
+        // A tree-sitter parse is whole-file and fast, so it keeps no memo to resume from.
+        if let Some(spans) = self.highlight_tree(content, language) {
+            return spans;
+        }
         let Some((syntax, theme)) = self.resolve(language) else { return self.plain(content) };
         let lines: Vec<&str> = LinesWithEndings::from(content).collect();
         MEMO.with_borrow_mut(|(owner, memo)| {
@@ -311,9 +289,58 @@ impl Highlighter {
         let find = |set: &'static SyntaxSet, lang: &str| {
             set.find_syntax_by_extension(lang).or_else(|| set.find_syntax_by_token(lang))
         };
-        let syntax = language
-            .and_then(|lang| find(swift_syntaxes(), lang).or_else(|| find(syntaxes(), lang)))?;
+        let syntax = language.and_then(|lang| find(syntaxes(), lang))?;
         Some((syntax, self.theme.as_ref()?))
+    }
+
+    /// Highlight `content` with the tree-sitter grammar for `language`, each capture in the theme
+    /// color of its `TextMate` scope. `None` when there is no grammar or no theme.
+    fn highlight_tree(&self, content: &str, language: Option<&str>) -> Option<Vec<Vec<Span>>> {
+        let grammar = crate::grammar::find(language?)?;
+        let theme = self.theme.as_ref()?;
+        let runs = crate::grammar::paint(grammar, content)?;
+        let highlighter = SyntectHighlighter::new(theme);
+        let root = Scope::new(grammar.root).ok();
+        let style = |scope: Option<Scope>| {
+            let stack: Vec<Scope> = root.into_iter().chain(scope).collect();
+            let s = highlighter.style_for_stack(&stack);
+            (from_syntect(s.foreground), s.font_style.contains(FontStyle::BOLD))
+        };
+        let plain = style(None);
+        let styles: Vec<(Color, bool)> = grammar
+            .query()?
+            .capture_names()
+            .iter()
+            .map(|name| style(Scope::new(&crate::grammar::scope_for(name)).ok()))
+            .collect();
+
+        let mut lines = Vec::new();
+        let mut runs = runs.into_iter().peekable();
+        let mut start = 0;
+        for line in content.split_inclusive('\n') {
+            let end = start + line.trim_end_matches('\n').len();
+            let mut spans: Vec<Span> = Vec::new();
+            let mut at = start;
+            while at < end {
+                while runs.next_if(|r| r.end <= at).is_some() {}
+                let Some(run) = runs.peek() else { break };
+                let to = run.end.min(end);
+                let (color, bold) = run.capture.map_or(plain, |c| styles[c as usize]);
+                match spans.last_mut() {
+                    Some(last) if last.color == color && last.bold == bold => {
+                        last.text.push_str(&content[at..to]);
+                    }
+                    _ => spans.push(Span { text: content[at..to].to_string(), color, bold }),
+                }
+                at = to;
+            }
+            if spans.is_empty() {
+                spans.push(Span { text: String::new(), color: plain.0, bold: plain.1 });
+            }
+            lines.push(spans);
+            start += line.len();
+        }
+        Some(lines)
     }
 
     fn plain(&self, content: &str) -> Vec<Vec<Span>> {
@@ -434,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn the_vendored_swift_grammar_colors_xcodes_roles() {
+    fn swift_colors_xcodes_roles() {
         use ratatui::style::Color::Rgb;
         let theme = crate::diff_theme::resolve("xcode-dark").unwrap();
         let h = Highlighter::new(theme.syntax);
@@ -454,6 +481,26 @@ mod tests {
         assert_eq!(color(2, "id"), Rgb(0x78, 0xc2, 0xb3), "a member");
         assert_eq!(color(2, "nil"), Rgb(0xff, 0x7a, 0xb2), "a keyword");
         assert_eq!(color(2, "String"), Rgb(0xda, 0xba, 0xff), "a system type");
+    }
+
+    #[test]
+    fn kotlin_colors_xcodes_roles() {
+        use ratatui::style::Color::Rgb;
+        let theme = crate::diff_theme::resolve("xcode-dark").unwrap();
+        let h = Highlighter::new(theme.syntax);
+        let src = "class Foo {\n    fun go(b: String) { val n = b.length; println(n) }\n}\n";
+        let lines = h.highlight(src, Some("kt"));
+        let color = |line: usize, text: &str| {
+            let span = lines[line].iter().find(|s| s.text.trim() == text);
+            span.unwrap_or_else(|| panic!("no span {text:?} in {:?}", lines[line])).color
+        };
+        let declaration = Rgb(0x4e, 0xb0, 0xcc);
+        assert_eq!(color(0, "Foo"), Rgb(0x6b, 0xdf, 0xff), "a type declaration");
+        assert_eq!(color(1, "go"), declaration);
+        assert_eq!(color(1, "n"), declaration);
+        assert_eq!(color(1, "length"), Rgb(0x78, 0xc2, 0xb3), "a member");
+        assert_eq!(color(1, "String"), Rgb(0xda, 0xba, 0xff), "a system type");
+        assert_eq!(color(1, "fun"), Rgb(0xff, 0x7a, 0xb2), "a keyword");
     }
 
     #[test]
