@@ -3406,7 +3406,7 @@ fn follow_terminal_bars_take_no_fill_on_a_dark_terminal() {
 
 #[test]
 fn the_gutter_marks_each_line_and_deleted_code_is_red() {
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier};
     let r = Repo::init();
     r.write("a.rs", "head\nlet total = compute(a, b);\ngone entirely\ntail\n");
     r.commit_all("init");
@@ -3431,8 +3431,22 @@ fn the_gutter_marks_each_line_and_deleted_code_is_red() {
     assert!(out.contains("   3-│ gone entirely"), "{out}");
     assert!(out.contains("   2~│ let total = computeSum(a, b);"), "{out}");
     assert!(out.contains("   4+│ brand new"), "{out}");
-    assert_eq!(cell_of(&buf, "~│ let total = compute(").fg, Color::Red);
-    assert_eq!(cell_of(&buf, "~│ let total = computeSum").fg, Color::Yellow);
+    // A changed line's number and status char take the ANSI red or green (yellow for an
+    // edit's new half) as bold text, with no fill.
+    let ink = |needle| {
+        let c = cell_of(&buf, needle);
+        assert!(c.modifier.contains(Modifier::BOLD), "{needle}: {c:?}");
+        (c.fg, c.bg)
+    };
+    assert_eq!(ink("~│ let total = compute("), (Color::Red, Color::Reset));
+    assert_eq!(ink("~│ let total = computeSum"), (Color::Yellow, Color::Reset));
+    assert_eq!(ink("3-│ gone"), (Color::Red, Color::Reset));
+    assert_eq!(ink("-│ gone"), (Color::Red, Color::Reset));
+    assert_eq!(ink("4+│ brand"), (Color::Green, Color::Reset));
+    assert_eq!(ink("+│ brand"), (Color::Green, Color::Reset));
+    let context_num = cell_of(&buf, "1 │ head");
+    assert!(context_num.modifier.contains(Modifier::DIM), "{context_num:?}");
+    assert!(!context_num.modifier.contains(Modifier::BOLD), "{context_num:?}");
     // Deleted code drops its syntax colors for red; its changed word, on the red fill, takes
     // the fill's ink so it never reads red on red. Insertions keep their syntax colors.
     assert_eq!(cell_of(&buf, "gone entirely").fg, Color::Red);

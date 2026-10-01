@@ -1523,10 +1523,11 @@ const COMMENT_DOT: &str = " •";
 
 /// A button that is not the selected one — an inactive tab, the delete popup's other choice:
 /// a dull gray fill, so the selected button's blue is the only one that stands out, under
-/// text bright enough to read on it. The `terminal` theme's dull gray is ANSI bright black,
-/// under its default text: faint text sinks into it.
+/// text bright enough to read on it. The dark `terminal` theme's dull gray is ANSI bright
+/// black, under its default text: faint text sinks into it. On a light terminal bright black
+/// is a heavy block, so the light theme takes its own `surface1`, the pale ANSI gray.
 fn idle_button(p: &Palette) -> Style {
-    if p.follows_terminal() {
+    if p.follows_terminal() && !p.fills_bars() {
         Style::default().bg(Color::DarkGray).fg(Color::Reset)
     } else {
         Style::default().bg(p.surface1).fg(p.dim0)
@@ -2105,15 +2106,22 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
         .or_else(|| row.old_no())
         .filter(|&n| n > 0)
         .map_or(String::new(), |n| n.to_string());
-    // Numbers sit a step brighter than the dim chrome so they stay legible while read.
-    let num_color = pal.dim1;
     // An edited line's `~` is red on its old half, yellow on its new one.
     let status = row.status();
+    let changed = status != ' ';
     let status_color = match (status, row.marker()) {
         ('-', _) | ('~', '-') => pal.red,
         ('+', _) => pal.green,
         ('~', _) => pal.yellow,
         _ => pal.dim2,
+    };
+    // A changed line's number takes its status color, bold with its status char; context
+    // numbers sit a step brighter than the dim chrome so they stay legible while read.
+    let (num_style, status_style) = if changed {
+        let mark = Style::default().fg(status_color).add_modifier(Modifier::BOLD);
+        (mark, mark)
+    } else {
+        (Style::default().fg(pal.dim1), Style::default().fg(status_color))
     };
     let status = status.to_string();
     let divider = Span::styled("│ ", Style::default().fg(pal.dim2));
@@ -2185,13 +2193,13 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
                             "[+]",
                             Style::default().fg(pal.orange).add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(status.clone(), Style::default().fg(status_color)),
+                        Span::styled(status.clone(), status_style),
                         divider.clone(),
                     ]
                 } else {
                     vec![
-                        Span::styled(format!(" {num:>gutter_w$}"), Style::default().fg(num_color)),
-                        Span::styled(status.clone(), Style::default().fg(status_color)),
+                        Span::styled(format!(" {num:>gutter_w$}"), num_style),
+                        Span::styled(status.clone(), status_style),
                         divider.clone(),
                     ]
                 }
@@ -2200,11 +2208,13 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
                 vec![Span::raw(" ".repeat(prefix_w - 2)), divider.clone()]
             };
             let status_at = gutter.len() - 2;
+            // A changed line's number sits just before its status char and keeps its color.
+            let keep_from = if k == 0 && !hovered && changed { status_at - 1 } else { status_at };
             let mut spans = gutter;
             spans.extend(cells_to_spans(chunk, emph_bg, HlStyle { bg: pal.yellow, fg: pal.ink() }));
             if cursor_fill.is_some() {
-                // The status char keeps its red or green.
-                on_cursor_fill(pal, &mut spans[..status_at]);
+                // The status char and a changed line's number keep their red or green.
+                on_cursor_fill(pal, &mut spans[..keep_from]);
                 on_cursor_fill(pal, &mut spans[status_at + 1..]);
             }
             let mut line = Line::from(spans);
