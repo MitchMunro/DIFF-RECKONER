@@ -102,15 +102,6 @@ impl Row {
         }
     }
 
-    /// The gutter's status char: `'~'` for either half of an edited line, else [`Row::marker`].
-    pub fn status(&self) -> char {
-        if self.is_modified_old() || matches!(self, Row::Insertion { modified: true, .. }) {
-            '~'
-        } else {
-            self.marker()
-        }
-    }
-
     /// Whether this is an edited line's old half — the row a merged view hides, leaving the
     /// new half to stand for the edit.
     pub fn is_modified_old(&self) -> bool {
@@ -777,16 +768,17 @@ mod tests {
         let del = d.rows.iter().find(|r| matches!(r, Row::Deletion { .. })).unwrap();
         let ins = d.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
         assert!(del.is_modified_old() && !ins.is_modified_old());
-        assert_eq!((del.status(), ins.status()), ('~', '~'));
+        assert!(matches!(ins, Row::Insertion { modified: true, .. }));
+        assert_eq!((del.marker(), ins.marker()), ('-', '+'));
         assert!(segs(&ins.text(), ins.emphasis()).iter().any(|s| s.contains("bar")));
         // A trimmed line is modified too.
         let trimmed = build("let x = foo(a, b);\n", "let x = foo(a);\n");
         let ins = trimmed.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
-        assert_eq!(ins.status(), '~');
+        assert!(matches!(ins, Row::Insertion { modified: true, .. }));
         // A lone deletion is no edit's old half.
         let gone = build("a\nb\n", "a\n");
         assert!(gone.rows.iter().all(|r| !r.is_modified_old()));
-        assert!(gone.rows.iter().any(|r| r.status() == '-'));
+        assert!(gone.rows.iter().any(|r| r.marker() == '-'));
     }
 
     #[test]
@@ -811,13 +803,14 @@ mod tests {
         let edited = d.rows.iter().find(|r| r.text() == "let total = computeSum();").unwrap();
         assert_eq!(segs(&del.text(), del.emphasis()), ["compute();"]);
         assert_eq!(segs(&edited.text(), edited.emphasis()), ["computeSum();"]);
-        assert_eq!((edited.status(), comment.status()), ('~', '+'));
+        assert!(matches!(edited, Row::Insertion { modified: true, .. }));
+        assert!(matches!(comment, Row::Insertion { modified: false, .. }));
         assert!(comment.emphasis().is_empty(), "the unrelated inserted line stays plain");
     }
 
-    /// A build's change rows as `(status, text)`, in display order.
+    /// A build's change rows as `(marker, text)`, in display order.
     fn changes(d: &FileDiff) -> Vec<(char, String)> {
-        d.rows.iter().filter(|r| r.status() != ' ').map(|r| (r.status(), r.text())).collect()
+        d.rows.iter().filter(|r| r.marker() != ' ').map(|r| (r.marker(), r.text())).collect()
     }
 
     #[test]
@@ -836,8 +829,8 @@ mod tests {
             [
                 c('+', "fn tag() {}"),
                 c('+', "fn remove() {}"),
-                c('~', "/// Open tasks first, then highest priority."),
-                c('~', "/// Open tasks first, then highest priority, then by title."),
+                c('-', "/// Open tasks first, then highest priority."),
+                c('+', "/// Open tasks first, then highest priority, then by title."),
             ]
         );
     }
@@ -847,8 +840,8 @@ mod tests {
         // Nothing wedges between consecutive edits, so they keep git's shape rather than
         // interleaving; a trailing unpaired insertion stays last.
         let d = build("let a = 1;\nlet b = 2;\n", "let a = 10;\nlet b = 20;\nlet c = 3;\n");
-        let statuses: Vec<char> = changes(&d).iter().map(|(s, _)| *s).collect();
-        assert_eq!(statuses, ['~', '~', '~', '~', '+']);
+        let markers: Vec<char> = changes(&d).iter().map(|(m, _)| *m).collect();
+        assert_eq!(markers, ['-', '-', '+', '+', '+']);
         let texts: Vec<String> = changes(&d).into_iter().map(|(_, t)| t).collect();
         assert_eq!(texts, ["let a = 1;", "let b = 2;", "let a = 10;", "let b = 20;", "let c = 3;"]);
     }

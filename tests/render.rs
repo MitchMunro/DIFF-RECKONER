@@ -3449,24 +3449,23 @@ fn the_gutter_marks_each_line_and_deleted_code_is_red() {
         buf.cell((x, y as u16)).unwrap().clone()
     };
 
-    // Context is blank, a lone deletion `-`, a lone insertion `+`, and both halves of an
-    // edited line `~`: red on the old, yellow on the new.
+    // Context is blank, a deletion `-` and an insertion `+`, an edited line's halves included.
     let buf = render_buffer(&app);
     let out = dump(&buf);
     assert!(out.contains("   1 │ head"), "{out}");
-    assert!(out.contains("   2~│ let total = compute(a, b);"), "{out}");
+    assert!(out.contains("   2-│ let total = compute(a, b);"), "{out}");
     assert!(out.contains("   3-│ gone entirely"), "{out}");
-    assert!(out.contains("   2~│ let total = computeSum(a, b);"), "{out}");
+    assert!(out.contains("   2+│ let total = computeSum(a, b);"), "{out}");
     assert!(out.contains("   4+│ brand new"), "{out}");
-    // A changed line's number and status char take the ANSI red or green (yellow for an
-    // edit's new half) as bold text, with no fill.
+    // A changed line's number and status char take the ANSI red or green as bold text,
+    // with no fill.
     let ink = |needle| {
         let c = cell_of(&buf, needle);
         assert!(c.modifier.contains(Modifier::BOLD), "{needle}: {c:?}");
         (c.fg, c.bg)
     };
-    assert_eq!(ink("~│ let total = compute("), (Color::Red, Color::Reset));
-    assert_eq!(ink("~│ let total = computeSum"), (Color::Yellow, Color::Reset));
+    assert_eq!(ink("-│ let total = compute("), (Color::Red, Color::Reset));
+    assert_eq!(ink("+│ let total = computeSum"), (Color::Green, Color::Reset));
     assert_eq!(ink("3-│ gone"), (Color::Red, Color::Reset));
     assert_eq!(ink("-│ gone"), (Color::Red, Color::Reset));
     assert_eq!(ink("4+│ brand"), (Color::Green, Color::Reset));
@@ -3487,7 +3486,7 @@ fn the_gutter_marks_each_line_and_deleted_code_is_red() {
     let heights = vec![1; app.visible.len()];
     app.toggle_merge_modified(&heights, 30, |app| vec![1; app.visible.len()]);
     let out = render(&app);
-    assert!(out.contains("   2~│ let total = computeSum(a, b);"), "{out}");
+    assert!(out.contains("   2+│ let total = computeSum(a, b);"), "{out}");
     assert!(!out.contains("compute(a, b)"), "{out}");
     assert!(out.contains("   3-│ gone entirely"), "{out}");
     // The key lives in the `?` panel alone, never on row 1.

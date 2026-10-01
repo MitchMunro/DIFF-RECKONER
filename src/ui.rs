@@ -2129,20 +2129,23 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
         .or_else(|| row.old_no())
         .filter(|&n| n > 0)
         .map_or(String::new(), |n| n.to_string());
-    // An edited line's `~` is red on its old half, yellow on its new one.
-    let status = row.status();
+    let status = row.marker();
     let changed = status != ' ';
-    let status_color = match (status, row.marker()) {
-        ('-', _) | ('~', '-') => pal.red,
-        ('+', _) => pal.green,
-        ('~', _) => pal.yellow,
+    let status_color = match status {
+        '-' => pal.red,
+        '+' => pal.green,
         _ => pal.dim2,
     };
-    // A changed line's number takes its status color, bold with its status char; context
-    // numbers sit a step brighter than the dim chrome so they stay legible while read.
+    // A changed line's number takes its status color dulled a fifth toward the base, bold with
+    // its full-color status char; context numbers sit a step brighter than the dim chrome so
+    // they stay legible while read. An ANSI color has no blend, so it stays as is.
     let (num_style, status_style) = if changed {
         let mark = Style::default().fg(status_color).add_modifier(Modifier::BOLD);
-        (mark, mark)
+        let dulled = match status_color {
+            Color::Rgb(..) => crate::theme::blend(status_color, pal.base, 0.2),
+            other => other,
+        };
+        (mark.fg(dulled), mark)
     } else {
         (Style::default().fg(pal.dim1), Style::default().fg(status_color))
     };

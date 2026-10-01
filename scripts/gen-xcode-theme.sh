@@ -4,23 +4,26 @@
 #   scripts/gen-xcode-theme.sh light > assets/diff-themes/xcode-light.tmTheme
 set -e
 v=$1
-# The changed-words fills' opacity over their line's band, as hex: 33 = 20%, 40 = 25%, 66 = 40%, 80 = 50%,
-# 99 = 60%, CC = 80%, FF = Xcode's full strength. Deleted words (orange), then added words (blue).
-DEL_ALPHA=40
-INS_ALPHA=80
+# The changed-words fills' opacity over their line's band, as hex: 33 = 20%, 40 = 25%, 59 = 35%, 66 = 40%, 80 = 50%,
+# 8C = 55%, 99 = 60%, CC = 80%, FF = Xcode's full strength. Deleted words (orange), then added words (blue).
+DEL_ALPHA=99
+INS_ALPHA=CC
+# The changed lines' bands: the same hues over the background, 26 = 15% orange, 40 = 25% blue.
+DEL_LINE_ALPHA=26
+INS_LINE_ALPHA=40
 if [ "$v" = dark ]; then
   NAME="Xcode Default (Dark)"; BG=#292A30; FG=#DFDFE0; LINE=#2F3239; SEL=#646F83; GUT=#747478; CARET=#FFFFFF
   KW=#FF7AB2; STR=#FF8170; NUM=#D9C97C; CMT=#7F8C98; DOCKW=#A3B1BF; TDECL=#6BDFFF; ODECL=#4EB0CC
   PTYPE=#ACF2E4; PMEM=#78C2B3; STYPE=#DABAFF; SFUNC=#B281EB; PRE=#FFA14F; ATTR=#CC9768; URL=#6699FF; MARK=#92A1B1
-  # Xcode's comparison view, sampled from a screenshot: a grey band under a deleted line with
-  # its text on orange, a slate-blue band under an added line with its changes on blue.
-  DEL_LINE=#38393F; DEL_TEXT=#745238$DEL_ALPHA; INS_LINE=#282D35; INS_TEXT=#1C4872$INS_ALPHA; DEL_ACCENT=#E8935A; INS_ACCENT=#4C9BFF
+  # Xcode's comparison view, sampled from a screenshot: a faint orange band under a deleted line
+  # with its text on orange, a faint blue band under an added line with its changes on blue.
+  DEL_LINE=#745238$DEL_LINE_ALPHA; DEL_TEXT=#745238$DEL_ALPHA; INS_LINE=#1C4872$INS_LINE_ALPHA; INS_TEXT=#1C4872$INS_ALPHA; DEL_ACCENT=#E8935A; INS_ACCENT=#4C9BFF
 else
   NAME="Xcode Default (Light)"; BG=#FFFFFF; FG=#262626; LINE=#E8F2FF; SEL=#A4CDFF; GUT=#A6A6A6; CARET=#000000
   KW=#9B2393; STR=#C41A16; NUM=#1C00CF; CMT=#5D6C79; DOCKW=#4A5560; TDECL=#0B4F79; ODECL=#0F68A0
   PTYPE=#1C464A; PMEM=#326D74; STYPE=#3900A0; SFUNC=#6C36A9; PRE=#643820; ATTR=#815F03; URL=#0E0EFF; MARK=#4A5560
   # The same roles in light: no reference screenshot, so the dark hues lightened to match.
-  DEL_LINE=#EEEEF0; DEL_TEXT=#F6D7BC$DEL_ALPHA; INS_LINE=#EAF1FA; INS_TEXT=#C4DCF7$INS_ALPHA; DEL_ACCENT=#B5561A; INS_ACCENT=#1A6FD8
+  DEL_LINE=#F6D7BC$DEL_LINE_ALPHA; DEL_TEXT=#F6D7BC$DEL_ALPHA; INS_LINE=#C4DCF7$INS_LINE_ALPHA; INS_TEXT=#C4DCF7$INS_ALPHA; DEL_ACCENT=#B5561A; INS_ACCENT=#1A6FD8
 fi
 rule() { # name scope fg [fontStyle]
   printf '\t\t<dict>\n\t\t\t<key>name</key>\n\t\t\t<string>%s</string>\n\t\t\t<key>scope</key>\n\t\t\t<string>%s</string>\n\t\t\t<key>settings</key>\n\t\t\t<dict>\n\t\t\t\t<key>foreground</key>\n\t\t\t\t<string>%s</string>\n' "$1" "$2" "$3"

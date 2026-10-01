@@ -266,11 +266,16 @@ mod tests {
     #[test]
     fn xcode_paints_its_comparison_colors() {
         let p = resolve("xcode-dark").unwrap().palette;
-        // The changed-words fills sit over their line's band: orange at 25%, blue at 50%.
-        let orange = over((0x74, 0x52, 0x38, 64.0 / 255.0), hex(0x38393f));
-        let blue = over((0x1c, 0x48, 0x72, 128.0 / 255.0), hex(0x282d35));
-        assert_eq!((p.del_bg, p.emph_del_bg), (hex(0x38393f), orange), "grey, orange");
-        assert_eq!((p.ins_bg, p.emph_ins_bg), (hex(0x282d35), blue), "slate, blue");
+        // The bands are the hues over the base, orange at 15% and blue at 25%; the
+        // changed-words fills sit over their band, orange at 60% and blue at 80%.
+        let (orange, blue) = ((0x74, 0x52, 0x38), (0x1c, 0x48, 0x72));
+        let at = |(r, g, b): (u8, u8, u8), a: u8| (r, g, b, f64::from(a) / 255.0);
+        let del_band = over(at(orange, 0x26), hex(0x292a30));
+        let ins_band = over(at(blue, 0x40), hex(0x292a30));
+        let del_words = over(at(orange, 0x99), del_band);
+        let ins_words = over(at(blue, 0xcc), ins_band);
+        assert_eq!((p.del_bg, p.emph_del_bg), (del_band, del_words), "orange band, orange");
+        assert_eq!((p.ins_bg, p.emph_ins_bg), (ins_band, ins_words), "blue band, blue");
         assert_eq!((p.red, p.green), (hex(0xe8935a), hex(0x4c9bff)), "the gutter signs");
     }
 

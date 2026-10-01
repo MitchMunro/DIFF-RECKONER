@@ -30,13 +30,13 @@ Licence: MIT (diff-reckoner). The color values are Apple's.
 				<key>gutterForeground</key>
 				<string>#747478</string>
 				<key>diffDeleted</key>
-				<string>#38393F</string>
+				<string>#74523826</string>
 				<key>diffDeletedText</key>
-				<string>#74523840</string>
+				<string>#74523899</string>
 				<key>diffInserted</key>
-				<string>#282D35</string>
+				<string>#1C487240</string>
 				<key>diffInsertedText</key>
-				<string>#1C487280</string>
+				<string>#1C4872CC</string>
 			</dict>
 		</dict>
 		<dict>

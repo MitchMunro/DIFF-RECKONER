@@ -210,7 +210,7 @@ again. The arrow keys never fold. A selection stops at a hidden marker but runs
 across a shown one, since it hides nothing. Whole-file view shows no markers at all.
 
 **Edited lines.** The gutter reads ` 798+│ `: the number, a status char (`+`
-added, `-` deleted, `~` either half of an edited line, blank unchanged), and a
+added, `-` deleted, blank unchanged; an edited line's halves are `-` and `+`), and a
 divider. Deleted code is red. An edited line is a deletion paired with the
 insertion similar enough to be the same line edited; by default both halves show,
 their changed words highlighted. `O` (`merge-modified`) hides the old halves so an

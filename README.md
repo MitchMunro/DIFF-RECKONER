@@ -69,8 +69,8 @@ click on it opens the lines below it, and the marker then reads `▾ N lines sho
 `enter` again hides them. `a` again shows every line, and the folds you opened stay open.
 `whole_file = false` in `config.toml` starts folded. `]`/`[` step between changes either way.
 
-The gutter marks each line after its number: `+` added, `-` deleted (in red), `~` an edited
-line, blank unchanged. An edited line shows its old half then its new half, the changed words
+The gutter marks each line after its number: `+` added, `-` deleted (in red), blank
+unchanged. An edited line shows its old half (`-`) then its new half (`+`), the changed words
 highlighted on each. `O` hides the old halves so an edit reads as its new line alone, and `O`
 again brings them back. The choice is saved to `config.toml` as `merge_modified`.
 
